@@ -333,14 +333,14 @@ output_t *output_new_ext(metafile_t *mf, const char *type, const char *kind, con
 	if (resample_audio > 0)
 		ret->sink.format.clockrate = resample_audio;
 
-	ilog(LOG_NOTICE, "output alloc: call=%s%s%s full_filename=%s file_name=%s"
-		" file_path=%s kind=%s type=%s",
+	ilog(LOG_NOTICE,
+			"recording FILE      call-id=%s%s%s"
+			"  status=ALLOCATED    type=%s  path=%s  dir=%s"
+			"  | Output path chosen (file opens when first audio frame arrives)",
 			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			kind ? kind : (type ? type : "(unknown)"),
 			ret->full_filename ? ret->full_filename : "(none)",
-			ret->file_name ? ret->file_name : "(none)",
-			ret->file_path ? ret->file_path : "(none)",
-			kind ? kind : "(unknown)",
-			type ? type : "(none)");
+			ret->file_path ? ret->file_path : "(none)");
 
 	return ret;
 }
@@ -517,10 +517,11 @@ static const char *output_setup(output_t *output, const format_t *requested_form
 
 	db_config_stream(output);
 	output->open_ok = 1;
-	ilog(LOG_NOTICE, "output open: full_path=%s file_name=%s kind=%s format=%s result=success",
-			output->filename ?: "(mem stream)",
-			output->file_name ? output->file_name : "(none)",
+	ilog(LOG_NOTICE,
+			"recording FILE      status=CREATED      type=%s  path=%s  format=%s"
+			"  | Audio file opened for writing",
 			output->kind ? output->kind : "(unknown)",
+			output->filename ?: "(mem stream)",
 			output->file_format ? output->file_format : "(default)");
 
 	return NULL;
@@ -542,10 +543,12 @@ static bool output_config(sink_t *sink, output_t *output, const format_t *reques
 		if (err) {
 			output_shutdown(output);
 			output->open_ok = 0;
-			ilog(LOG_ERR, "output open failed: full_path=%s file_name=%s kind=%s err=%s result=failed",
+			ilog(LOG_ERR,
+					"recording FILE      status=NOT_CREATED  type=%s  path=%s  err=%s"
+					"  | FAILED to open audio file",
+					output->kind ? output->kind : "(unknown)",
 					output->full_filename ? output->full_filename : "(none)",
-					output->file_name ? output->file_name : "(none)",
-					output->kind ? output->kind : "(unknown)", err);
+					err);
 			return false;
 		}
 	}
@@ -660,11 +663,7 @@ static bool output_shutdown(output_t *output) {
 	if (!output->fmtctx)
 		return false;
 
-	ilog(LOG_NOTICE, "output close begin: full_path=%s kind=%s frames_written=%" PRIu64
-		" packets_encoded=%" PRIu64 " write_fail=%" PRIu64 " open_ok=%d",
-			output->filename ?: "(mem stream)",
-			output->kind ? output->kind : "(unknown)",
-			output->frames_written, output->packets_encoded, output->write_fail, output->open_ok);
+	/* quiet intermediate close-begin; final SAVED/EMPTY/DISCARDED line is the operator summary */
 
 	bool ret = false;
 	if (output->fmtctx->pb)
@@ -713,11 +712,11 @@ void output_close(metafile_t *mf, output_t *output, tag_t *tag, bool discard) {
 	bool do_delete = !(output_storage & OUTPUT_STORAGE_FILE);
 	const char *saved_fn = output->filename;
 	const char *saved_full = output->full_filename;
-	const char *saved_name = output->file_name;
 	const char *kind = output->kind ? output->kind : "(unknown)";
 	uint64_t frames = output->frames_written;
 	uint64_t encpkts = output->packets_encoded;
 	const char *callid = (mf && mf->call_id) ? mf->call_id : (mf ? mf->name : "(unknown)");
+	uint64_t write_fail = output->write_fail;
 	if (!discard) {
 		if (output_shutdown(output)) {
 			output->close_ok = 1;
@@ -725,32 +724,42 @@ void output_close(metafile_t *mf, output_t *output, tag_t *tag, bool discard) {
 			notify_push_output(output, mf, tag);
 			s3_store(output, mf);
 			gcs_store(output, mf);
-			ilog(LOG_NOTICE, "output saved: call=%s%s%s full_path=%s file_name=%s"
-				" kind=%s frames_written=%" PRIu64 " packets_encoded=%" PRIu64
-				" discard=0 result=success",
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=%s%s%s"
+				"  status=SAVED         type=%s  path=%s"
+				"  frames=%" PRIu64 "  packets_encoded=%" PRIu64 "  write_fail=%" PRIu64
+				"  | Audio file SAVED on disk",
 					FMT_M(callid),
+					kind,
 					saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
-					saved_name ? saved_name : "(none)",
-					kind, frames, encpkts);
+					frames, encpkts, write_fail);
 		}
 		else {
 			db_delete_stream(mf, output);
-			ilog(LOG_NOTICE, "output empty/not-saved: call=%s%s%s full_path=%s"
-				" kind=%s frames_written=%" PRIu64 " result=empty",
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=%s%s%s"
+				"  status=NOT_CREATED   type=%s  path=%s"
+				"  frames=%" PRIu64 "  write_fail=%" PRIu64
+				"  | Audio file EMPTY / NOT SAVED (no media written)",
 					FMT_M(callid),
+					kind,
 					saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
-					kind, frames);
+					frames, write_fail);
 		}
 	}
 	else {
 		output_shutdown(output);
 		do_delete = true;
 		db_delete_stream(mf, output);
-		ilog(LOG_NOTICE, "output discarded: call=%s%s%s full_path=%s kind=%s"
-			" frames_written=%" PRIu64 " result=discarded",
+		ilog(LOG_NOTICE,
+			"recording FILE      call-id=%s%s%s"
+			"  status=DISCARDED     type=%s  path=%s"
+			"  frames=%" PRIu64
+			"  | Audio file DISCARDED (not kept)",
 				FMT_M(callid),
+				kind,
 				saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
-				kind, frames);
+				frames);
 	}
 	encoder_free(output->encoder);
 	if (output->filename && do_delete) {

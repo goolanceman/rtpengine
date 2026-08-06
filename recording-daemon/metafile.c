@@ -109,11 +109,12 @@ static void meta_mix_file_output(metafile_t *mf) {
 	if (!mf->mix) {
 		mf->mix_out = output_new_ext(mf, "mix", "mixed", "mix");
 		mf->mix = mix_new(&mf->mix_lock, &mf->mix_out->sink, mf->media_rec_slots);
-		ilog(LOG_NOTICE, "recording lifecycle: event=mix-output-create call-id=%s%s%s"
-			" full_filename=%s file_name=%s kind=mixed file_format=%s",
+		ilog(LOG_NOTICE,
+				"recording FILE      call-id=%s%s%s"
+				"  status=ALLOCATED    type=mix-audio  path=%s  format=%s"
+				"  | Mix output path reserved (file written when audio arrives)",
 				FMT_M(mf->call_id ? mf->call_id : mf->name),
 				mf->mix_out->full_filename ? mf->mix_out->full_filename : "(none)",
-				mf->mix_out->file_name ? mf->mix_out->file_name : "(none)",
 				mf->mix_out->file_format ? mf->mix_out->file_format : "(default)");
 	}
 
@@ -284,12 +285,14 @@ static void meta_metadata(metafile_t *mf, char *content) {
 	if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_called)) && q->length && q->head->data)
 		called = ((str *) q->head->data)->s;
 
-	ilog(LOG_NOTICE, "recording lifecycle: event=metadata meta_name=%s%s%s call-id=%s%s%s"
-		" session_id=%s calling=%s called=%s metadata=%s result=success",
-		FMT_M(mf->name),
-		FMT_M(mf->call_id ? mf->call_id : "(pending)"),
-		session_id, calling, called,
-		content ? content : "(none)");
+	ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s"
+			"  session_id=%s  calling=%s  called=%s"
+			"  metadata=%s"
+			"  | Call identity from NG metadata",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"),
+			session_id, calling, called,
+			content ? content : "(none)");
 
 	db_do_call(mf);
 	if (forward_to)
@@ -305,19 +308,12 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 
 	if (!strcmp(section, "CALL-ID")) {
 		mf->call_id = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=call-id meta_name=%s%s%s call-id=%s%s%s",
-				FMT_M(mf->name), FMT_M(mf->call_id));
 	}
 	else if (!strcmp(section, "PARENT")) {
 		mf->parent = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=parent meta_name=%s%s%s parent=%s call-id=%s%s%s",
-				FMT_M(mf->name), mf->parent,
-				FMT_M(mf->call_id ? mf->call_id : "(pending)"));
 	}
 	else if (!strcmp(section, "RANDOM_TAG")) {
 		mf->random_tag = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=random-tag meta_name=%s%s%s random_tag=%s",
-				FMT_M(mf->name), mf->random_tag);
 	}
 	else if (!strcmp(section, "METADATA"))
 		if (mf->forward_fd >= 0) {
@@ -348,41 +344,46 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		tag_label(mf, lu, content);
 	else if (sscanf_match(section, "RECORDING %u", &u) == 1) {
 		mf->recording_on = u ? 1 : 0;
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-flag meta_name=%s%s%s call-id=%s%s%s recording_on=%d",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), mf->recording_on);
+		ilog(LOG_NOTICE,
+			"recording FLAG      call-id=%s%s%s  recording_on=%d  | Recording %s",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"),
+			mf->recording_on,
+			mf->recording_on ? "enabled" : "disabled");
 	}
 	else if (sscanf_match(section, "FORWARDING %u", &u) == 1) {
 		mf->forwarding_on = u ? 1 : 0;
-		ilog(LOG_NOTICE, "recording lifecycle: event=forwarding-flag meta_name=%s%s%s call-id=%s%s%s forwarding_on=%d",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), mf->forwarding_on);
 	}
 	else if (sscanf_match(section, "STREAM %lu FORWARDING %u", &lu, &u) == 2)
 		stream_forwarding_on(mf, lu, u);
 	else if (!strcmp(section, "RECORDING_FILE")) {
 		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-file meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  recording_file=%s  | Explicit output file override",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "RECORDING_PATH")) {
 		mf->output_path = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-path meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  output_dir=%s  | Audio files will be written under this directory",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "RECORDING_PATTERN")) {
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-pattern meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  filename_pattern=%s  | Basename pattern for audio files",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "SKIP_DATABASE")) {
 		mf->skip_db = 1;
-		ilog(LOG_NOTICE, "recording lifecycle: event=skip-database meta_name=%s%s%s call-id=%s%s%s skip_db=1",
-			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"));
 	}
 	else if (!strcmp(section, "STARTED")) {
 		mf->started = 1;
-		ilog(LOG_NOTICE, "recording lifecycle: event=started meta_name=%s%s%s call-id=%s%s%s reading_started=1",
-				FMT_M(mf->name),
-				FMT_M(mf->call_id ? mf->call_id : "(pending)"));
+		ilog(LOG_NOTICE,
+			"recording START     call-id=%s%s%s"
+			"  meta=%s"
+			"  | Recording-daemon started reading streams",
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"),
+			mf->name ? mf->name : "(none)");
 	}
 
 	db_do_call(mf);
@@ -398,7 +399,9 @@ static metafile_t *metafile_get(char *name) {
 	if (mf)
 		goto out;
 
-	ilog(LOG_NOTICE, "recording lifecycle: event=new meta_name=%s%s%s spool_dir=%s reading_started=0",
+	ilog(LOG_NOTICE,
+			"recording NEW       meta=%s%s%s  spool=%s"
+			"  | New recording metafile detected in spool",
 			FMT_M(name), spool_dir);
 
 	mf = g_new0(__typeof(*mf), 1);
@@ -444,9 +447,7 @@ void metafile_change(char *name) {
 				FMT_M(fnbuf), strerror(errno));
 		goto out;
 	}
-	ilog(LOG_NOTICE, "recording lifecycle: event=meta-read meta_name=%s%s%s full_path=%s pos=%zu call-id=%s%s%s",
-			FMT_M(name), fnbuf, mf->pos,
-			FMT_M(mf->call_id ? mf->call_id : "(pending)"));
+	/* metafile read is high-frequency; keep quiet at NOTICE (details on NEW/START/FINISH) */
 	if (lseek(fd, mf->pos, SEEK_SET) == (off_t) -1) {
 		ilog(LOG_ERR, "Failed to seek to end of file %s%s%s: %s", FMT_M(fnbuf), strerror(errno));
 		close(fd);
@@ -595,7 +596,7 @@ void metafile_delete(char *name) {
 	pthread_mutex_unlock(&metafiles_lock);
 
 	{
-		int stream_n = 0, reading_n = 0;
+		int stream_n = 0;
 		uint64_t pkts = 0, bytes = 0;
 		if (mf->streams) {
 			for (int i = 0; i < mf->streams->len; i++) {
@@ -603,8 +604,6 @@ void metafile_delete(char *name) {
 				if (!st)
 					continue;
 				stream_n++;
-				if (st->reading || st->fd != -1)
-					reading_n++;
 				pkts += st->packets_read;
 				bytes += st->bytes_read;
 			}
@@ -613,34 +612,38 @@ void metafile_delete(char *name) {
 			? mf->mix_out->filename
 			: ((mf->mix_out && mf->mix_out->full_filename) ? mf->mix_out->full_filename : "(none)");
 
-		// Determine result: discarded, empty if no packets, else success
 		const char *result;
+		const char *file_status;
+		const char *human;
 		if (mf->discard) {
 			result = "discarded";
+			file_status = "NOT_CREATED";
+			human = "Recording finished; output DISCARDED (file deleted / not kept)";
 		} else if (pkts == 0) {
 			result = "empty";
+			file_status = "NOT_CREATED";
+			human = "Recording finished; NO packets received (audio file empty / not created)";
 		} else {
 			result = "success";
+			file_status = "CREATED";
+			human = "Recording finished; media was received (see FILE SAVED lines for final path)";
 		}
 
-		ilog(LOG_NOTICE, "recording lifecycle: event=finished meta_name=%s%s%s call-id=%s%s%s discard=%d started=%d"
-			" streams=%d reading_active=%d packets_total=%" PRIu64 " bytes_total=%" PRIu64
-			" mix_file=%s output_dest=%s output_path=%s output_pattern=%s random_tag=%s"
-			" metadata=%s"
-			" forward_ok=%d forward_fail=%d result=%s",
-				FMT_M(mf->name),
+		ilog(LOG_NOTICE,
+			"recording FINISH    call-id=%s%s%s"
+			"  outcome=%s  file_status=%s"
+			"  mix_file=%s  output_dir=%s  pattern=%s"
+			"  packets=%" PRIu64 "  bytes=%" PRIu64 "  streams=%d"
+			"  metadata=%s"
+			"  | %s",
 				FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
-				mf->discard, mf->started,
-				stream_n, reading_n, pkts, bytes,
+				result, file_status,
 				mix_path,
-				mf->output_dest ? mf->output_dest : "(default)",
 				mf->output_path ? mf->output_path : "(default)",
 				mf->output_pattern ? mf->output_pattern : "(default)",
-				mf->random_tag ? mf->random_tag : "(none)",
+				pkts, bytes, stream_n,
 				mf->metadata ? mf->metadata : "(none)",
-				__atomic_load_n(&mf->forward_count, __ATOMIC_RELAXED),
-				__atomic_load_n(&mf->forward_failed, __ATOMIC_RELAXED),
-				result);
+				human);
 	}
 
 	meta_destroy(mf);

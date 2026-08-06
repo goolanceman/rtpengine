@@ -28,15 +28,16 @@
 void stream_close(stream_t *stream) {
 	if (stream->fd == -1)
 		return;
-	ilog(LOG_NOTICE, "stream close: stream=%s call=%s%s%s packets_read=%" PRIu64
-		" bytes_read=%" PRIu64 " decode_ok=%" PRIu64 " decode_fail=%" PRIu64
-		" parse_fail=%" PRIu64 " reading_started=%d result=closed",
-		stream->name ? stream->name : "(unnamed)",
-		FMT_M(stream->metafile && stream->metafile->call_id
-			? stream->metafile->call_id : "(unknown)"),
-		stream->packets_read, stream->bytes_read,
-		stream->packets_decode_ok, stream->packets_decode_fail,
-		stream->packets_parse_fail, stream->reading);
+	ilog(LOG_NOTICE,
+			"recording STREAM    call-id=%s%s%s"
+			"  status=CLOSED       stream=%s  packets=%" PRIu64 "  bytes=%" PRIu64
+			"  decode_ok=%" PRIu64 "  decode_fail=%" PRIu64
+			"  | Stream closed",
+			FMT_M(stream->metafile && stream->metafile->call_id
+				? stream->metafile->call_id : "(unknown)"),
+			stream->name ? stream->name : "(unnamed)",
+			stream->packets_read, stream->bytes_read,
+			stream->packets_decode_ok, stream->packets_decode_fail);
 	epoll_del(stream->fd);
 	close(stream->fd);
 	stream->fd = -1;
@@ -66,22 +67,27 @@ static void stream_handler(handler_t *handler) {
 		buf = malloc(ALLOCLEN);
 		int ret = read(stream->fd, buf, MAXBUFLEN);
 		if (ret == 0) {
-			ilog(LOG_NOTICE, "stream EOF: stream=%s call=%s%s%s packets_read=%" PRIu64
-				" bytes_read=%" PRIu64 " reading_started=%d result=eof",
-				stream->name,
+			ilog(LOG_NOTICE,
+				"recording STREAM    call-id=%s%s%s"
+				"  status=EOF          stream=%s  packets=%" PRIu64 "  bytes=%" PRIu64
+				"  | Stream reached end-of-file",
 				FMT_M(stream->metafile && stream->metafile->call_id
 					? stream->metafile->call_id : "(unknown)"),
-				stream->packets_read, stream->bytes_read, stream->reading);
+				stream->name ? stream->name : "(none)",
+				stream->packets_read, stream->bytes_read);
 			stream_close(stream);
 			break;
 		}
 		else if (ret < 0) {
 			if (errno == EAGAIN || errno == EINTR || errno == EWOULDBLOCK)
 				break;
-			ilog(LOG_NOTICE, "stream read error: stream=%s call=%s%s%s err=%s packets_read=%" PRIu64 " result=failed",
-				stream->name,
+			ilog(LOG_NOTICE,
+				"recording STREAM    call-id=%s%s%s"
+				"  status=READ_ERROR   stream=%s  err=%s  packets=%" PRIu64
+				"  | Stream read failed",
 				FMT_M(stream->metafile && stream->metafile->call_id
 					? stream->metafile->call_id : "(unknown)"),
+				stream->name ? stream->name : "(none)",
 				strerror(errno), stream->packets_read);
 			stream_close(stream);
 			break;
@@ -106,12 +112,13 @@ static void stream_handler(handler_t *handler) {
 					ktable, mf->parent, stream->name);
 			else
 				snprintf(full_path, sizeof(full_path), "(none)");
-			ilog(LOG_NOTICE, "recording lifecycle: event=first-packet stream=%s call=%s%s%s full_path=%s"
-				" packets_read=1 bytes_read=%" PRIu64 " reading_started=1 result=success",
-				stream->name ? stream->name : "(none)",
-				FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"),
-				full_path,
-				stream->bytes_read);
+			ilog(LOG_NOTICE,
+					"recording STREAM    call-id=%s%s%s"
+					"  status=FIRST_PACKET stream=%s  bytes=%" PRIu64
+					"  | First media packet received on this stream",
+					FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"),
+					stream->name ? stream->name : "(none)",
+					stream->bytes_read);
 		}
 
 		pthread_mutex_unlock(&stream->lock);
@@ -173,10 +180,12 @@ void stream_open(metafile_t *mf, unsigned long id, char *name) {
 
 	stream->fd = open(fnbuf, O_RDONLY | O_NONBLOCK);
 	if (stream->fd == -1) {
-		ilog(LOG_ERR, "stream open failed: stream=%s full_path=%s call=%s%s%s err=%s reading_started=0 result=failed",
-				name, fnbuf,
-				FMT_M(mf->call_id ? mf->call_id : mf->name),
-				strerror(errno));
+		ilog(LOG_ERR,
+			"recording STREAM    call-id=%s%s%s"
+			"  status=NOT_OPENED   stream=%s  path=%s  err=%s"
+			"  | FAILED to open /proc stream",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			name, fnbuf, strerror(errno));
 		return;
 	}
 
@@ -184,10 +193,12 @@ void stream_open(metafile_t *mf, unsigned long id, char *name) {
 	stream->handler.ptr = stream;
 	stream->handler.func = stream_handler;
 	epoll_add(stream->fd, EPOLLIN, &stream->handler);
-	ilog(LOG_NOTICE, "stream open: stream_id=%lu name=%s full_path=%s call=%s%s%s parent=%s fd=%d reading_started=1 result=success",
-			id, name, fnbuf,
-			FMT_M(mf->call_id ? mf->call_id : mf->name),
-			mf->parent ? mf->parent : "(none)", stream->fd);
+	ilog(LOG_NOTICE,
+		"recording STREAM    call-id=%s%s%s"
+		"  status=OPENED       stream=%s  path=%s"
+		"  | Stream open and reading",
+		FMT_M(mf->call_id ? mf->call_id : mf->name),
+		name, fnbuf);
 }
 
 void stream_details(metafile_t *mf, unsigned long id, unsigned long tag, unsigned int media_sdp_id,
