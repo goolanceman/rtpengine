@@ -389,6 +389,7 @@ void recording_start_daemon(call_t *call) {
 		" method=%s spool_dir=%s meta_prefix=%s random_tag=%s"
 		" pcap_meta=%s proc_meta=%s pcap_file=%s"
 		" recording_file=%s recording_path=%s recording_pattern=%s"
+		" metadata=%s"
 		" writing_to_spool=%d pcap_open=%d proc_idx=%u phrase=\"Turning on call recording\"",
 		STR_FMT_M(&call->callid),
 		selected_recording_method ? selected_recording_method->name : "(none)",
@@ -401,6 +402,7 @@ void recording_start_daemon(call_t *call) {
 		call->recording_file.len ? call->recording_file.s : "(auto)",
 		call->recording_path.len ? call->recording_path.s : "(default)",
 		call->recording_pattern.len ? call->recording_pattern.s : "(default)",
+		call->metadata.len ? call->metadata.s : "(none)",
 		spooldir ? 1 : 0,
 		(call->recording && call->recording->pcap.recording_pdumper) ? 1 : 0,
 		(call->recording && call->recording->proc.call_idx != UNINIT_IDX) ? call->recording->proc.call_idx : 0);
@@ -955,6 +957,7 @@ void recording_log_call_summary(call_t *call, const char *event, bool discard)
 	const char *rec_file = call->recording_file.len ? call->recording_file.s : "(auto)";
 	const char *rec_path_ov = call->recording_path.len ? call->recording_path.s : "(default)";
 	const char *rec_pat = call->recording_pattern.len ? call->recording_pattern.s : "(default)";
+	const char *metadata = call->metadata.len ? call->metadata.s : "(none)";
 	const char *pcap_path = (rec && rec->pcap.recording_path) ? rec->pcap.recording_path : "(none)";
 	const char *pcap_meta = (rec && rec->pcap.meta_filepath) ? rec->pcap.meta_filepath : "(none)";
 	const char *proc_meta = (rec && rec->proc.meta_filepath) ? rec->proc.meta_filepath : "(none)";
@@ -1037,6 +1040,7 @@ void recording_log_call_summary(call_t *call, const char *event, bool discard)
 		" meta_prefix=%s random_tag=%s"
 		" pcap_meta=%s proc_meta=%s pcap_file=%s"
 		" recording_file_override=%s recording_path_override=%s recording_pattern=%s"
+		" metadata=%s"
 		" pcap_packets=%" PRIu64 " proc_call_idx=%u"
 		" streams=%u ssrcs=%u"
 		" rtp_in=%" PRIu64 "p/%" PRIu64 "b/%" PRIu64 "e"
@@ -1051,6 +1055,7 @@ void recording_log_call_summary(call_t *call, const char *event, bool discard)
 		meta_prefix, rand_tag,
 		pcap_meta, proc_meta, pcap_path,
 		rec_file, rec_path_ov, rec_pat,
+		metadata,
 		pcap_pkts, proc_idx,
 		stream_count, ssrc_count,
 		rtp_in_pkts, rtp_in_bytes, rtp_in_err,
@@ -1195,13 +1200,17 @@ static void proc_init(call_t *call) {
 	unlink(recording->proc.meta_filepath); // start fresh XXX good idea?
 
 	ilog(LOG_NOTICE, "proc recording init: call-id=" STR_FORMAT_M
-		" proc_meta=%s meta_prefix=%s random_tag=%s kernel_call_idx=%u spool=%s writing_to_spool=1",
+		" proc_meta=%s meta_prefix=%s random_tag=%s kernel_call_idx=%u spool=%s"
+		" metadata=%s recording_path=%s recording_pattern=%s writing_to_spool=1",
 		STR_FMT_M(&call->callid),
 		recording->proc.meta_filepath,
 		call->recording_meta_prefix.s,
 		call->recording_random_tag.len ? call->recording_random_tag.s : "(none)",
 		recording->proc.call_idx,
-		spooldir ? spooldir : "(unset)");
+		spooldir ? spooldir : "(unset)",
+		call->metadata.len ? call->metadata.s : "(none)",
+		call->recording_path.len ? call->recording_path.s : "(default)",
+		call->recording_pattern.len ? call->recording_pattern.s : "(default)");
 
 	append_meta_chunk_str(recording, &call->callid, "CALL-ID");
 	append_meta_chunk_s(recording, call->recording_meta_prefix.s, "PARENT");

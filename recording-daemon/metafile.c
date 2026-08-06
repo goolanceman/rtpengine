@@ -267,6 +267,30 @@ static void meta_metadata_parse(metafile_t *mf) {
 static void meta_metadata(metafile_t *mf, char *content) {
 	mf->metadata = g_string_chunk_insert(mf->gsc, content);
 	meta_metadata_parse(mf);
+
+	// Extract common keys for structured lifecycle logs (siprec-drachtio uses
+	// session_id:..., optionally calling/called when added to NG metadata).
+	const char *session_id = "(none)";
+	const char *calling = "(none)";
+	const char *called = "(none)";
+	str key_session = STR_CONST("session_id");
+	str key_calling = STR_CONST("calling");
+	str key_called = STR_CONST("called");
+	str_q *q;
+	if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_session)) && q->length && q->head->data)
+		session_id = ((str *) q->head->data)->s;
+	if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_calling)) && q->length && q->head->data)
+		calling = ((str *) q->head->data)->s;
+	if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_called)) && q->length && q->head->data)
+		called = ((str *) q->head->data)->s;
+
+	ilog(LOG_NOTICE, "recording lifecycle: event=metadata meta_name=%s%s%s call-id=%s%s%s"
+		" session_id=%s calling=%s called=%s metadata=%s result=success",
+		FMT_M(mf->name),
+		FMT_M(mf->call_id ? mf->call_id : "(pending)"),
+		session_id, calling, called,
+		content ? content : "(none)");
+
 	db_do_call(mf);
 	if (forward_to)
 		start_forwarding_capture(mf, content);
@@ -336,17 +360,17 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		stream_forwarding_on(mf, lu, u);
 	else if (!strcmp(section, "RECORDING_FILE")) {
 		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-file meta_name=%s%s%s call-id=%s%s%s value=%s",
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-file meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
 			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "RECORDING_PATH")) {
 		mf->output_path = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-path meta_name=%s%s%s call-id=%s%s%s value=%s",
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-path meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
 			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "RECORDING_PATTERN")) {
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
-		ilog(LOG_NOTICE, "recording lifecycle: event=recording-pattern meta_name=%s%s%s call-id=%s%s%s value=%s",
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-pattern meta_name=%s%s%s call-id=%s%s%s value=%s result=success",
 			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
 	}
 	else if (!strcmp(section, "SKIP_DATABASE")) {
@@ -601,7 +625,8 @@ void metafile_delete(char *name) {
 
 		ilog(LOG_NOTICE, "recording lifecycle: event=finished meta_name=%s%s%s call-id=%s%s%s discard=%d started=%d"
 			" streams=%d reading_active=%d packets_total=%" PRIu64 " bytes_total=%" PRIu64
-			" mix_file=%s output_dest=%s output_path=%s random_tag=%s"
+			" mix_file=%s output_dest=%s output_path=%s output_pattern=%s random_tag=%s"
+			" metadata=%s"
 			" forward_ok=%d forward_fail=%d result=%s",
 				FMT_M(mf->name),
 				FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
@@ -610,7 +635,9 @@ void metafile_delete(char *name) {
 				mix_path,
 				mf->output_dest ? mf->output_dest : "(default)",
 				mf->output_path ? mf->output_path : "(default)",
+				mf->output_pattern ? mf->output_pattern : "(default)",
 				mf->random_tag ? mf->random_tag : "(none)",
+				mf->metadata ? mf->metadata : "(none)",
 				__atomic_load_n(&mf->forward_count, __ATOMIC_RELAXED),
 				__atomic_load_n(&mf->forward_failed, __ATOMIC_RELAXED),
 				result);
