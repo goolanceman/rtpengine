@@ -4,3 +4,7 @@ docs/_*
 bencode.c
 config.mk
 config.mk.new
+mac-binaries/
+rhel-binaries/
+build-out/
+build-tools/logs/
