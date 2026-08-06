@@ -652,12 +652,11 @@ void detect_setup_recording(call_t *call, const sdp_ng_flags *flags) {
 	if (!str_cmp(recordcall, "yes") || !str_cmp(recordcall, "on") || flags->record_call) {
 		// Don't auto-start recording if it's currently paused
 		// Only start if there's no existing recording or if recording is not paused
-		const char *md = (flags->metadata.len) ? flags->metadata.s
-			: (call->metadata.len ? call->metadata.s : "(none)");
-		const char *rpath = (flags->recording_path.len) ? flags->recording_path.s
-			: (call->recording_path.len ? call->recording_path.s : "(default)");
-		const char *rpat = (flags->recording_pattern.len) ? flags->recording_pattern.s
-			: (call->recording_pattern.len ? call->recording_pattern.s : "(default)");
+		// Prefer call->* copies (NUL-terminated via call_str_cpy). flags->* may
+		// point into the raw NG buffer and are not safe with %s.
+		const char *md = call->metadata.len ? call->metadata.s : "(none)";
+		const char *rpath = call->recording_path.len ? call->recording_path.s : "(default)";
+		const char *rpat = call->recording_pattern.len ? call->recording_pattern.s : "(default)";
 		if (!call->recording || CALL_ISSET(call, RECORDING_ON)) {
 			ilog(LOG_NOTICE,
 				"recording DETECT    call-id=" STR_FORMAT_M
