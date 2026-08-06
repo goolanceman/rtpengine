@@ -1,5 +1,6 @@
 #include "output.h"
 #include <libavcodec/avcodec.h>
+#include <libavutil/error.h>
 #include <limits.h>
 #include <string.h>
 #include <stdint.h>
@@ -46,8 +47,8 @@ static int output_got_packet(encoder_t *enc, void *u1, void *u2) {
 	if (ret < 0) {
 		// Log first failure only to avoid storms; counter tracked for close summary
 		if (output->write_fail == 0) {
-			char errbuf[AV_ERROR_MAX_STRING_SIZE];
-			av_make_error_string(errbuf, sizeof(errbuf), ret);
+			char errbuf[128];
+			av_strerror(ret, errbuf, sizeof(errbuf));
 			ilog(LOG_ERR, "output write failed: full_path=%s file_name=%s%s%s kind=%s av_err=%s result=failed",
 				output->filename ? output->filename : "(mem)",
 				FMT_M(output->file_name),

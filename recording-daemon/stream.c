@@ -98,12 +98,19 @@ static void stream_handler(handler_t *handler) {
 
 		// Log first packet once per stream
 		if (stream->packets_read == 1) {
+			char full_path[PATH_MAX];
+			metafile_t *mf = stream->metafile;
+			if (mf && mf->parent && stream->name)
+				snprintf(full_path, sizeof(full_path),
+					"/proc/rtpengine/%u/calls/%s/%s",
+					ktable, mf->parent, stream->name);
+			else
+				snprintf(full_path, sizeof(full_path), "(none)");
 			ilog(LOG_NOTICE, "recording lifecycle: event=first-packet stream=%s call=%s%s%s full_path=%s"
 				" packets_read=1 bytes_read=%" PRIu64 " reading_started=1 result=success",
-				stream->name,
-				FMT_M(stream->metafile && stream->metafile->call_id
-					? stream->metafile->call_id : "(unknown)"),
-				stream->full_filename ? stream->full_filename : "(none)",
+				stream->name ? stream->name : "(none)",
+				FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"),
+				full_path,
 				stream->bytes_read);
 		}
 
