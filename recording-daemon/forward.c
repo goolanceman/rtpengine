@@ -20,7 +20,9 @@ void start_forwarding_capture(metafile_t *mf, char *meta_info) {
 #else
 	if ((sock = socket(AF_UNIX, SOCK_DGRAM, 0)) == -1) {
 #endif
-		ilog(LOG_ERR, "Error creating socket: %s", strerror(errno));
+		ilog(LOG_ERR, "Error creating socket: %s call-id=%s%s%s",
+			strerror(errno),
+			FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"));
 		return;
 	}
 
@@ -29,20 +31,30 @@ void start_forwarding_capture(metafile_t *mf, char *meta_info) {
 	strncpy(addr.sun_path, forward_to, sizeof(addr.sun_path) - 1);
 
 	if (fcntl(sock, F_SETFL, O_NONBLOCK) < 0) {
-		ilog(LOG_ERR, "Error setting socket non-blocking: %s", strerror(errno));
+		ilog(LOG_ERR, "Error setting socket non-blocking: %s call-id=%s%s%s",
+			strerror(errno),
+			FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"));
 		goto err;
 	}
 
 	if (connect(sock, (struct sockaddr*) &addr, sizeof(addr)) == -1) {
-		ilog(LOG_ERR, "Error connecting to socket %s : %s", addr.sun_path,
-				strerror(errno));
+		ilog(LOG_ERR, "recording lifecycle: event=forward-connect call-id=%s%s%s path=%s err=%s result=failed",
+			FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"),
+			addr.sun_path,
+			strerror(errno));
 		goto err;
 	}
 
 	if (send(sock, meta_info, strlen(meta_info), 0) == -1) {
-		ilog(LOG_ERR, "Error sending meta info: %s. Call will not be forwarded", strerror(errno));
+		ilog(LOG_ERR, "Error sending meta info: %s. Call will not be forwarded call-id=%s%s%s",
+			strerror(errno),
+			FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"));
 		goto err;
 	}
+
+	ilog(LOG_NOTICE, "recording lifecycle: event=forward-connect call-id=%s%s%s path=%s result=success",
+		FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"),
+		addr.sun_path);
 
 	mf->forward_fd = sock;
 	return;
@@ -54,7 +66,8 @@ int forward_packet(metafile_t *mf, unsigned char *buf, unsigned len) {
 
 	if (mf->forward_fd == -1) {
 		ilog(LOG_ERR,
-				"Trying to send packets, but connection not initialized!");
+				"Trying to send packets, but connection not initialized! call-id=%s%s%s",
+				FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"));
 		goto err;
 	}
 
@@ -62,7 +75,9 @@ int forward_packet(metafile_t *mf, unsigned char *buf, unsigned len) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			ilog(LOG_DEBUG, "Dropping packet since call would block");
 		else
-			ilog(LOG_ERR, "Error sending: %s", strerror(errno));
+			ilog(LOG_ERR, "Error sending: %s call-id=%s%s%s",
+				strerror(errno),
+				FMT_M(mf && mf->call_id ? mf->call_id : "(unknown)"));
 		goto err;
 	}
 

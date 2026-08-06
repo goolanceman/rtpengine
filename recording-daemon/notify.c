@@ -72,14 +72,18 @@ static bool do_notify_http(notif_req_t *req) {
 
 	/* success */
 
-	ilog(LOG_NOTICE, "HTTP notification for '%s%s%s' was successful", FMT_M(req->name));
+	ilog(LOG_NOTICE, "HTTP notification for '%s%s%s' was successful: call-id=%s%s%s file=%s result=success",
+		FMT_M(req->name),
+		FMT_M(req->call_id ? req->call_id : "(unknown)"),
+		req->object_name ? req->object_name : "(none)");
 
 	return true;
 
 fail:
-	ilog(LOG_ERR, "Failed to perform HTTP notification for '%s%s%s': "
-			"Error while %s: %s",
+	ilog(LOG_ERR, "Failed to perform HTTP notification for '%s%s%s': call-id=%s%s%s "
+			"Error while %s: %s result=failed",
 			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"),
 			err, curl_easy_strerror(ret));
 
 	return false;
@@ -99,9 +103,17 @@ static bool do_notify_command(notif_req_t *req) {
 			NULL, NULL, NULL, NULL, NULL, &err);
 
 	if (!success) {
-		ilog(LOG_ERR, "Failed to execute notification command for '%s%s%s': %s",
-			FMT_M(req->name), err->message);
+		ilog(LOG_ERR, "Failed to execute notification command for '%s%s%s': call-id=%s%s%s path=%s err=%s result=failed",
+			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"),
+			req->argv && req->argv[1] ? req->argv[1] : "(none)",
+			err->message);
 		g_error_free(err);
+	} else {
+		ilog(LOG_NOTICE, "command notification for '%s%s%s': call-id=%s%s%s path=%s result=success",
+			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"),
+			req->argv && req->argv[1] ? req->argv[1] : "(none)");
 	}
 
 	return success;
@@ -144,6 +156,7 @@ static void do_notify(void *p, void *u) {
 
 	req->action->cleanup(req);
 	g_free(req->name);
+	g_free(req->call_id);
 	g_free(req);
 }
 
@@ -311,6 +324,7 @@ void notify_push_setup(const notif_action_t *action, output_t *o, metafile_t *mf
 	notif_req_t *req = g_new0(__typeof(*req), 1);
 
 	req->name = g_strdup_printf("%s for '%s'", action->name, o->file_name);
+	req->call_id = mf && mf->call_id ? g_strdup(mf->call_id) : g_strdup("(unknown)");
 	req->action = action;
 
 	req->db_id = o->db_id;

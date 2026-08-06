@@ -237,6 +237,7 @@ struct output_s {
 	/* debug write counters (visible at log-level >= NOTICE / 5) */
 	uint64_t frames_written;
 	uint64_t packets_encoded;
+	uint64_t write_fail;  /* av_write_frame failure count */
 	unsigned int open_ok:1;
 	unsigned int close_ok:1;
 };
@@ -266,6 +267,7 @@ struct notif_action_s {
 
 struct notif_req_s {
 	char *name; // just for logging
+	char *call_id; // call-id for enriched logging
 
 	union {
 		// generic HTTP req

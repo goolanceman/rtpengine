@@ -42,7 +42,20 @@ static int output_got_packet(encoder_t *enc, void *u1, void *u2) {
 			(long) enc->avpkt->dts);
 	dbg("{%s%s%s} output dts %li", FMT_M(output->file_name), (long) output->encoder->mux_dts);
 
-	av_write_frame(output->fmtctx, enc->avpkt);
+	int ret = av_write_frame(output->fmtctx, enc->avpkt);
+	if (ret < 0) {
+		// Log first failure only to avoid storms; counter tracked for close summary
+		if (output->write_fail == 0) {
+			char errbuf[AV_ERROR_MAX_STRING_SIZE];
+			av_make_error_string(errbuf, sizeof(errbuf), ret);
+			ilog(LOG_ERR, "output write failed: full_path=%s file_name=%s%s%s kind=%s av_err=%s result=failed",
+				output->filename ? output->filename : "(mem)",
+				FMT_M(output->file_name),
+				output->kind ? output->kind : "(unknown)",
+				errbuf);
+		}
+		output->write_fail++;
+	}
 	output->packets_encoded++;
 
 	return 0;
@@ -647,10 +660,10 @@ static bool output_shutdown(output_t *output) {
 		return false;
 
 	ilog(LOG_NOTICE, "output close begin: full_path=%s kind=%s frames_written=%" PRIu64
-		" packets_encoded=%" PRIu64 " open_ok=%d",
+		" packets_encoded=%" PRIu64 " write_fail=%" PRIu64 " open_ok=%d",
 			output->filename ?: "(mem stream)",
 			output->kind ? output->kind : "(unknown)",
-			output->frames_written, output->packets_encoded, output->open_ok);
+			output->frames_written, output->packets_encoded, output->write_fail, output->open_ok);
 
 	bool ret = false;
 	if (output->fmtctx->pb)

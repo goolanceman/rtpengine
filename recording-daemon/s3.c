@@ -19,7 +19,9 @@ static bool s3_perform(notif_req_t *req) {
 	CURLcode ret;
 
 	if (!req->content) {
-		ilog(LOG_ERR, "Content for S3 upload unavailable ('%s%s%s')", FMT_M(req->name));
+		ilog(LOG_ERR, "Content for S3 upload unavailable ('%s%s%s'): call-id=%s%s%s",
+			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"));
 		return true; // no point in retrying
 	}
 
@@ -31,8 +33,9 @@ static bool s3_perform(notif_req_t *req) {
 				req->content->s->str, req->content->s->len);
 	}
 
-	ilog(LOG_DEBUG, "Launching S3 upload for '%s%s%s' as '%s'", FMT_M(req->name),
-			req->object_name);
+	ilog(LOG_NOTICE, "recording lifecycle: event=s3-upload-start object=%s call-id=%s%s%s result=start",
+		req->object_name,
+		FMT_M(req->call_id ? req->call_id : "(unknown)"));
 
 	time_t now = time(NULL);
 	struct tm tm;
@@ -44,7 +47,9 @@ static bool s3_perform(notif_req_t *req) {
 
 	if (!auth) {
 		ilog(LOG_ERR, "Failed to create S3 authentication string "
-				"for '%s%s%s'", FMT_M(req->name));
+				"for '%s%s%s': call-id=%s%s%s result=failed",
+				FMT_M(req->name),
+				FMT_M(req->call_id ? req->call_id : "(unknown)"));
 		return false;
 	}
 
@@ -113,12 +118,18 @@ static bool s3_perform(notif_req_t *req) {
 
 	err = "checking response code (not 2xx)";
 	if (code < 200 || code >= 300) {
-		ilog(LOG_ERR, "S3 upload returned code %ld, with body: '%s%.*s%s'",
-				code, FMT_M((int) response->len, response->str));
+		ilog(LOG_ERR, "S3 upload returned code %ld, with body: '%s%.*s%s': call-id=%s%s%s",
+				code, FMT_M((int) response->len, response->str),
+				FMT_M(req->call_id ? req->call_id : "(unknown)"));
 		goto fail;
 	}
 
-	ilog(LOG_DEBUG, "S3 upload for '%s%s%s' successful", FMT_M(req->name));
+	ilog(LOG_NOTICE, "recording lifecycle: event=s3-upload object=%s uri=%s http_code=%ld size=%zu call-id=%s%s%s result=success",
+		req->object_name,
+		uri,
+		code,
+		req->content ? req->content->s->len : 0,
+		FMT_M(req->call_id ? req->call_id : "(unknown)"));
 
 	curl_slist_free_all(headers);
 
@@ -127,9 +138,10 @@ static bool s3_perform(notif_req_t *req) {
 	return true;
 
 fail:
-	ilog(LOG_ERR, "Failed to perform S3 upload for '%s%s%s': "
-			"Error while %s: %s",
+	ilog(LOG_ERR, "Failed to perform S3 upload for '%s%s%s': call-id=%s%s%s "
+			"Error while %s: %s result=failed",
 			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"),
 			err, curl_easy_strerror(ret));
 
 	curl_slist_free_all(headers);

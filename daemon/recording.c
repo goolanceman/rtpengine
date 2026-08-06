@@ -357,15 +357,20 @@ static void rec_setup_monologue(struct call_monologue *ml) {
 void recording_start_daemon(call_t *call) {
 	if (call->recording) {
 		// already active
+		ilog(LOG_NOTICE, "recording already-active: call-id=" STR_FORMAT_M
+			" recording_on=%d result=already-active",
+			STR_FMT_M(&call->callid),
+			CALL_ISSET(call, RECORDING_ON) ? 1 : 0);
 		recording_update_flags(call, true);
 		return;
 	}
 
 	if (!spooldir) {
-		ilog(LOG_ERR, "Call recording requested, but no spool directory configured");
+		ilog(LOG_ERR, "recording start-failed: call-id=" STR_FORMAT_M
+			" spool_dir=(unset) writing_to_spool=0 result=failed reason=spool-unset",
+			STR_FMT_M(&call->callid));
 		return;
 	}
-	ilog(LOG_NOTICE, "Turning on call recording.");
 
 	call->recording = g_new0(struct recording, 1);
 	g_autoptr(char) escaped_callid = g_uri_escape_string(call->callid.s, NULL, 0);
@@ -384,7 +389,7 @@ void recording_start_daemon(call_t *call) {
 		" method=%s spool_dir=%s meta_prefix=%s random_tag=%s"
 		" pcap_meta=%s proc_meta=%s pcap_file=%s"
 		" recording_file=%s recording_path=%s recording_pattern=%s"
-		" writing_to_spool=%d pcap_open=%d proc_idx=%u",
+		" writing_to_spool=%d pcap_open=%d proc_idx=%u phrase=\"Turning on call recording\"",
 		STR_FMT_M(&call->callid),
 		selected_recording_method ? selected_recording_method->name : "(none)",
 		spooldir ? spooldir : "(unset)",
@@ -444,6 +449,17 @@ void recording_start(call_t *call) {
 		}
 	}
 
+	if (was_paused && call->recording) {
+		ilog(LOG_NOTICE, "recording resume: call-id=" STR_FORMAT_M
+			" pcap_meta=%s pcap_file=%s proc_meta=%s meta_prefix=%s"
+			" writing_to_spool=1 result=success",
+			STR_FMT_M(&call->callid),
+			call->recording->pcap.meta_filepath ? call->recording->pcap.meta_filepath : "(none)",
+			call->recording->pcap.recording_path ? call->recording->pcap.recording_path : "(none)",
+			call->recording->proc.meta_filepath ? call->recording->proc.meta_filepath : "(none)",
+			call->recording_meta_prefix.len ? call->recording_meta_prefix.s : "(none)");
+	}
+
 	recording_start_daemon(call);
 }
 // lock must be held
@@ -452,7 +468,17 @@ void recording_stop_daemon(call_t *call) {
 		return;
 
 	// check if all recording options are disabled
-	if (CALL_ISSET(call, RECORDING_ON) || CALL_ISSET(call, REC_FORWARDING)) {
+	if (CALL_ISSET(call, RECORDING_ON)) {
+		ilog(LOG_NOTICE, "recording stop-blocked: call-id=" STR_FORMAT_M
+			" reason=recording_on result=blocked",
+			STR_FMT_M(&call->callid));
+		recording_update_flags(call, true);
+		return;
+	}
+	if (CALL_ISSET(call, REC_FORWARDING)) {
+		ilog(LOG_NOTICE, "recording stop-blocked: call-id=" STR_FORMAT_M
+			" reason=rec_forwarding result=blocked",
+			STR_FMT_M(&call->callid));
 		recording_update_flags(call, true);
 		return;
 	}
@@ -460,12 +486,17 @@ void recording_stop_daemon(call_t *call) {
 	for (__auto_type l = call->monologues.head; l; l = l->next) {
 		struct call_monologue *ml = l->data;
 		if (ML_ISSET(ml, REC_FORWARDING)) {
+			ilog(LOG_NOTICE, "recording stop-blocked: call-id=" STR_FORMAT_M
+				" reason=ml_rec_forwarding result=blocked",
+				STR_FMT_M(&call->callid));
 			recording_update_flags(call, true);
 			return;
 		}
 	}
 
-	ilog(LOG_NOTICE, "Turning off call recording.");
+	ilog(LOG_NOTICE, "recording stop: call-id=" STR_FORMAT_M
+		" phrase=\"Turning off call recording\"",
+		STR_FMT_M(&call->callid));
 	recording_finish(call, false);
 }
 // lock must be held
@@ -525,15 +556,34 @@ void detect_setup_recording(call_t *call, const sdp_ng_flags *flags) {
 	if (!str_cmp(recordcall, "yes") || !str_cmp(recordcall, "on") || flags->record_call) {
 		// Don't auto-start recording if it's currently paused
 		// Only start if there's no existing recording or if recording is not paused
-		if (!call->recording || CALL_ISSET(call, RECORDING_ON))
+		if (!call->recording || CALL_ISSET(call, RECORDING_ON)) {
+			ilog(LOG_NOTICE, "recording detect: call-id=" STR_FORMAT_M
+				" record_call=yes action=start result=success",
+				STR_FMT_M(&call->callid));
 			recording_start(call);
+		} else {
+			ilog(LOG_NOTICE, "recording detect: call-id=" STR_FORMAT_M
+				" record_call=yes action=skip-paused result=no",
+				STR_FMT_M(&call->callid));
+		}
 	}
-	else if (!str_cmp(recordcall, "no") || !str_cmp(recordcall, "off"))
+	else if (!str_cmp(recordcall, "no") || !str_cmp(recordcall, "off")) {
+		ilog(LOG_NOTICE, "recording detect: call-id=" STR_FORMAT_M
+			" record_call=no action=stop result=success",
+			STR_FMT_M(&call->callid));
 		recording_stop(call);
-	else if (!str_cmp(recordcall, "discard") || flags->discard_recording)
+	}
+	else if (!str_cmp(recordcall, "discard") || flags->discard_recording) {
+		ilog(LOG_NOTICE, "recording detect: call-id=" STR_FORMAT_M
+			" record_call=discard action=discard result=success",
+			STR_FMT_M(&call->callid));
 		recording_discard(call);
-	else if (recordcall->len != 0)
-		ilog(LOG_INFO, "\"record-call\" flag "STR_FORMAT" is invalid flag.", STR_FMT(recordcall));
+	}
+	else if (recordcall->len != 0) {
+		ilog(LOG_NOTICE, "recording detect: call-id=" STR_FORMAT_M
+			" record_call=" STR_FORMAT " action=none result=invalid",
+			STR_FMT_M(&call->callid), STR_FMT(recordcall));
+	}
 }
 
 static void rec_pcap_init(call_t *call) {
@@ -968,7 +1018,17 @@ void recording_log_call_summary(call_t *call, const char *event, bool discard)
 	uint64_t mos_avg = mos_n ? (mos_sum / mos_n) : 0;
 	uint64_t jit_avg = mos_n ? (jitter_sum / mos_n) : 0;
 	uint64_t loss_avg = mos_n ? (loss_sum / mos_n) : 0;
-	const char *result = discard ? "discarded" : "success";
+
+	// Determine result: empty if no media, discarded if discarded, else success
+	const char *result;
+	if (discard) {
+		result = "discarded";
+	} else if (pcap_pkts <= 1 && rtp_in_pkts == 0 && rtp_out_pkts == 0) {
+		// Empty call: minimal pcap packets (Wireshark baseline) and no RTP
+		result = "empty";
+	} else {
+		result = "success";
+	}
 
 	ilog(LOG_NOTICE,
 		"recording %s: call-id=" STR_FORMAT_M

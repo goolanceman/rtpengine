@@ -299,7 +299,9 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		if (mf->forward_fd >= 0) {
 			ilog(LOG_INFO, "Connection already established, sending mid-call metadata %.*s", (int)len, content);
 			if (send(mf->forward_fd, content, len, 0) == -1) {
-				ilog(LOG_ERR, "Error sending mid-call metadata: %s.", strerror(errno));
+				ilog(LOG_ERR, "Error sending mid-call metadata: %s. call-id=%s%s%s",
+					strerror(errno),
+					FMT_M(mf->call_id ? mf->call_id : "(unknown)"));
 			}
 		} else {
 			meta_metadata(mf, content);
@@ -320,20 +322,38 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		tag_metadata(mf, lu, content);
 	else if (sscanf_match(section, "LABEL %lu", &lu) == 1)
 		tag_label(mf, lu, content);
-	else if (sscanf_match(section, "RECORDING %u", &u) == 1)
+	else if (sscanf_match(section, "RECORDING %u", &u) == 1) {
 		mf->recording_on = u ? 1 : 0;
-	else if (sscanf_match(section, "FORWARDING %u", &u) == 1)
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-flag meta_name=%s%s%s call-id=%s%s%s recording_on=%d",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), mf->recording_on);
+	}
+	else if (sscanf_match(section, "FORWARDING %u", &u) == 1) {
 		mf->forwarding_on = u ? 1 : 0;
+		ilog(LOG_NOTICE, "recording lifecycle: event=forwarding-flag meta_name=%s%s%s call-id=%s%s%s forwarding_on=%d",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), mf->forwarding_on);
+	}
 	else if (sscanf_match(section, "STREAM %lu FORWARDING %u", &lu, &u) == 2)
 		stream_forwarding_on(mf, lu, u);
-	else if (!strcmp(section, "RECORDING_FILE"))
+	else if (!strcmp(section, "RECORDING_FILE")) {
 		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "RECORDING_PATH"))
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-file meta_name=%s%s%s call-id=%s%s%s value=%s",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATH")) {
 		mf->output_path = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "RECORDING_PATTERN"))
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-path meta_name=%s%s%s call-id=%s%s%s value=%s",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATTERN")) {
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "SKIP_DATABASE"))
+		ilog(LOG_NOTICE, "recording lifecycle: event=recording-pattern meta_name=%s%s%s call-id=%s%s%s value=%s",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"), content);
+	}
+	else if (!strcmp(section, "SKIP_DATABASE")) {
 		mf->skip_db = 1;
+		ilog(LOG_NOTICE, "recording lifecycle: event=skip-database meta_name=%s%s%s call-id=%s%s%s skip_db=1",
+			FMT_M(mf->name), FMT_M(mf->call_id ? mf->call_id : "(pending)"));
+	}
 	else if (!strcmp(section, "STARTED")) {
 		mf->started = 1;
 		ilog(LOG_NOTICE, "recording lifecycle: event=started meta_name=%s%s%s call-id=%s%s%s reading_started=1",
@@ -568,6 +588,17 @@ void metafile_delete(char *name) {
 		const char *mix_path = (mf->mix_out && mf->mix_out->filename)
 			? mf->mix_out->filename
 			: ((mf->mix_out && mf->mix_out->full_filename) ? mf->mix_out->full_filename : "(none)");
+
+		// Determine result: discarded, empty if no packets, else success
+		const char *result;
+		if (mf->discard) {
+			result = "discarded";
+		} else if (pkts == 0) {
+			result = "empty";
+		} else {
+			result = "success";
+		}
+
 		ilog(LOG_NOTICE, "recording lifecycle: event=finished meta_name=%s%s%s call-id=%s%s%s discard=%d started=%d"
 			" streams=%d reading_active=%d packets_total=%" PRIu64 " bytes_total=%" PRIu64
 			" mix_file=%s output_dest=%s output_path=%s random_tag=%s"
@@ -582,7 +613,7 @@ void metafile_delete(char *name) {
 				mf->random_tag ? mf->random_tag : "(none)",
 				__atomic_load_n(&mf->forward_count, __ATOMIC_RELAXED),
 				__atomic_load_n(&mf->forward_failed, __ATOMIC_RELAXED),
-				mf->discard ? "discarded" : "success");
+				result);
 	}
 
 	meta_destroy(mf);

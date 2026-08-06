@@ -57,12 +57,15 @@ static char *get_uri(const GString *response, const char *field) {
 
 static bool gcs_perform(notif_req_t *req) {
 	if (!req->content) {
-		ilog(LOG_ERR, "Content for GCS upload unavailable ('%s%s%s')", FMT_M(req->name));
+		ilog(LOG_ERR, "Content for GCS upload unavailable ('%s%s%s'): call-id=%s%s%s",
+			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"));
 		return true; // no point in retrying
 	}
 
-	ilog(LOG_DEBUG, "Launching GCS upload for '%s%s%s' as '%s'", FMT_M(req->name),
-			req->object_name);
+	ilog(LOG_NOTICE, "recording lifecycle: event=gcs-upload-start object=%s call-id=%s%s%s result=start",
+		req->object_name,
+		FMT_M(req->call_id ? req->call_id : "(unknown)"));
 
 	const char *err = NULL;
 	CURLcode ret;
@@ -73,7 +76,9 @@ static bool gcs_perform(notif_req_t *req) {
 		g_autoptr(char) jwt_err = NULL;
 		oauth_add_auth(&headers, &auth_ctx, &jwt_err);
 		if (jwt_err) {
-			ilog(LOG_ERR, "Failed to obtain OAuth/JWT token: %s", jwt_err);
+			ilog(LOG_ERR, "Failed to obtain OAuth/JWT token: %s call-id=%s%s%s result=failed",
+				jwt_err,
+				FMT_M(req->call_id ? req->call_id : "(unknown)"));
 			return false;
 		}
 	}
@@ -119,12 +124,11 @@ static bool gcs_perform(notif_req_t *req) {
 
 	err = "checking response code (not 2xx)";
 	if (code < 200 || code >= 300) {
-		ilog(LOG_ERR, "GCS upload returned code %ld, with body: '%s%.*s%s'",
-				code, FMT_M((int) response->len, response->str));
+		ilog(LOG_ERR, "GCS upload returned code %ld, with body: '%s%.*s%s': call-id=%s%s%s",
+				code, FMT_M((int) response->len, response->str),
+				FMT_M(req->call_id ? req->call_id : "(unknown)"));
 		goto err;
 	}
-
-	ilog(LOG_DEBUG, "GCS upload for '%s%s%s' successful", FMT_M(req->name));
 
 	// extract access URI
 	if (gcs_medialink)
@@ -134,14 +138,22 @@ static bool gcs_perform(notif_req_t *req) {
 	if (!access_uri)
 		access_uri = g_strdup_printf("%s/%s", gcs_uri, req->object_name);
 
+	ilog(LOG_NOTICE, "recording lifecycle: event=gcs-upload object=%s access_uri=%s http_code=%ld size=%zu call-id=%s%s%s result=success",
+		req->object_name,
+		access_uri ? access_uri : "(none)",
+		code,
+		req->content ? req->content->s->len : 0,
+		FMT_M(req->call_id ? req->call_id : "(unknown)"));
+
 	db_set_gcs(req->db_id, access_uri);
 
 	return true;
 
 err:
-	ilog(LOG_ERR, "Failed to perform GCS upload for '%s%s%s': "
-			"Error while %s: %s",
+	ilog(LOG_ERR, "Failed to perform GCS upload for '%s%s%s': call-id=%s%s%s "
+			"Error while %s: %s result=failed",
 			FMT_M(req->name),
+			FMT_M(req->call_id ? req->call_id : "(unknown)"),
 			err, curl_easy_strerror(ret));
 
 	curl_slist_free_all(headers);

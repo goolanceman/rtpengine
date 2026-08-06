@@ -95,6 +95,18 @@ static void stream_handler(handler_t *handler) {
 			stream->metafile->packets_total++;
 			stream->metafile->bytes_total += (uint64_t) ret;
 		}
+
+		// Log first packet once per stream
+		if (stream->packets_read == 1) {
+			ilog(LOG_NOTICE, "recording lifecycle: event=first-packet stream=%s call=%s%s%s full_path=%s"
+				" packets_read=1 bytes_read=%" PRIu64 " reading_started=1 result=success",
+				stream->name,
+				FMT_M(stream->metafile && stream->metafile->call_id
+					? stream->metafile->call_id : "(unknown)"),
+				stream->full_filename ? stream->full_filename : "(none)",
+				stream->bytes_read);
+		}
+
 		pthread_mutex_unlock(&stream->lock);
 
 		if (forward_to){
