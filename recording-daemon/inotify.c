@@ -20,13 +20,15 @@ static handler_t inotify_handler = {
 
 
 static void inotify_close_write(struct inotify_event *inev) {
-	dbg("inotify close_write(%s%s%s)", FMT_M(inev->name));
+	ilog(LOG_NOTICE, "inotify event: close_write meta_name=%s%s%s spool_dir=%s action=metafile_change",
+			FMT_M(inev->name), spool_dir);
 	metafile_change(inev->name);
 }
 
 
 static void inotify_delete(struct inotify_event *inev) {
-	dbg("inotify delete(%s%s%s)", FMT_M(inev->name));
+	ilog(LOG_NOTICE, "inotify event: delete meta_name=%s%s%s spool_dir=%s action=metafile_delete",
+			FMT_M(inev->name), spool_dir);
 	metafile_delete(inev->name);
 }
 
@@ -71,6 +73,8 @@ void inotify_setup(void) {
 
 	if (epoll_add(inotify_fd, EPOLLIN, &inotify_handler))
 		die_errno("failed to add inotify_fd to epoll");
+
+	ilog(LOG_NOTICE, "inotify watching spool_dir=%s events=CLOSE_WRITE|DELETE", spool_dir);
 }
 
 

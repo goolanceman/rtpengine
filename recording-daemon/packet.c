@@ -73,7 +73,9 @@ out:
 	pthread_mutex_lock(&ret->lock);
 	pthread_mutex_unlock(&mf->lock);
 
-	dbg("Init for SSRC %s%lx%s of stream #%lu", FMT_M(ret->ssrc), stream->id);
+	ilog(LOG_NOTICE, "ssrc init: call=%s%s%s stream=#%lu ssrc=%s%lx%s recording_on=%d",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			stream->id, FMT_M(ret->ssrc), mf->recording_on);
 
 	if (mf->recording_on && output_single) {
 		if (!ret->output) {
@@ -82,6 +84,13 @@ out:
 			tag_t *tag = tag_get(mf, stream->tag);
 			if (tag)
 				ret->output = output_new_ext(mf, buf, "single", tag->label);
+			if (ret->output)
+				ilog(LOG_NOTICE, "ssrc single-output: call=%s%s%s ssrc=%s%lx%s"
+					" full_filename=%s file_name=%s kind=single",
+						FMT_M(mf->call_id ? mf->call_id : mf->name),
+						FMT_M(ret->ssrc),
+						ret->output->full_filename ? ret->output->full_filename : "(none)",
+						ret->output->file_name ? ret->output->file_name : "(none)");
 		}
 
 		db_do_stream(mf, ret->output, stream, ssrc);
@@ -136,8 +145,16 @@ static void packet_decode(ssrc_t *ssrc, packet_t *packet) {
 	}
 
 	if (decoder_input(ssrc->decoders[payload_type], &packet->payload, ntohl(packet->rtp->timestamp),
-			ssrc))
+			ssrc)) {
+		ssrc->packets_decode_fail++;
+		if (ssrc->stream)
+			ssrc->stream->packets_decode_fail++;
 		ilog(LOG_ERR, "Failed to decode media packet");
+	} else {
+		ssrc->packets_decoded++;
+		if (ssrc->stream)
+			ssrc->stream->packets_decode_ok++;
+	}
 }
 
 
@@ -201,7 +218,9 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 	ssrc_t *ssrc = ssrc_get(stream, ssrc_num);
 	if (!ssrc) // stream shutdown
 		goto out;
+	ssrc->packets_in++;
 	if (packet_sequencer_insert(&ssrc->sequencer, &packet->p) < 0) {
+		ssrc->packets_duped++;
 		dbg("skipping dupe packet (new seq %i prev seq %i)", packet->p.seq, ssrc->sequencer.seq);
 		goto skip;
 	}
@@ -219,6 +238,8 @@ out:
 	return;
 
 err:
+	if (stream)
+		stream->packets_parse_fail++;
 	ilog(LOG_WARN, "Failed to parse packet headers");
 ignore:
 	packet_free(packet);

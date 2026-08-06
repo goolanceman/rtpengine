@@ -43,6 +43,7 @@ static int output_got_packet(encoder_t *enc, void *u1, void *u2) {
 	dbg("{%s%s%s} output dts %li", FMT_M(output->file_name), (long) output->encoder->mux_dts);
 
 	av_write_frame(output->fmtctx, enc->avpkt);
+	output->packets_encoded++;
 
 	return 0;
 }
@@ -91,6 +92,8 @@ static bool output_add(sink_t *sink, AVFrame *frame) {
 	if (!output->fmtctx) // output not open
 		goto out;
 	ret = encoder_input_fifo(output->encoder, frame, output_got_packet, output, NULL) == 0;
+	if (ret)
+		output->frames_written++;
 
 out:
 	av_frame_free(&frame);
@@ -316,6 +319,15 @@ output_t *output_new_ext(metafile_t *mf, const char *type, const char *kind, con
 	if (resample_audio > 0)
 		ret->sink.format.clockrate = resample_audio;
 
+	ilog(LOG_NOTICE, "output alloc: call=%s%s%s full_filename=%s file_name=%s"
+		" file_path=%s kind=%s type=%s",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			ret->full_filename ? ret->full_filename : "(none)",
+			ret->file_name ? ret->file_name : "(none)",
+			ret->file_path ? ret->file_path : "(none)",
+			kind ? kind : "(unknown)",
+			type ? type : "(none)");
+
 	return ret;
 }
 
@@ -490,7 +502,12 @@ static const char *output_setup(output_t *output, const format_t *requested_form
 	}
 
 	db_config_stream(output);
-	ilog(LOG_INFO, "Opened output media file '%s' for writing", output->filename ?: "(mem stream)");
+	output->open_ok = 1;
+	ilog(LOG_NOTICE, "output open: full_path=%s file_name=%s kind=%s format=%s result=success",
+			output->filename ?: "(mem stream)",
+			output->file_name ? output->file_name : "(none)",
+			output->kind ? output->kind : "(unknown)",
+			output->file_format ? output->file_format : "(default)");
 
 	return NULL;
 }
@@ -510,7 +527,11 @@ static bool output_config(sink_t *sink, output_t *output, const format_t *reques
 		const char *err = output_setup(output, requested_format, &req_fmt);
 		if (err) {
 			output_shutdown(output);
-			ilog(LOG_ERR, "Error configuring media output: %s", err);
+			output->open_ok = 0;
+			ilog(LOG_ERR, "output open failed: full_path=%s file_name=%s kind=%s err=%s result=failed",
+					output->full_filename ? output->full_filename : "(none)",
+					output->file_name ? output->file_name : "(none)",
+					output->kind ? output->kind : "(unknown)", err);
 			return false;
 		}
 	}
@@ -625,7 +646,11 @@ static bool output_shutdown(output_t *output) {
 	if (!output->fmtctx)
 		return false;
 
-	ilog(LOG_INFO, "Closing output media file '%s'", output->filename ?: "(mem stream)");
+	ilog(LOG_NOTICE, "output close begin: full_path=%s kind=%s frames_written=%" PRIu64
+		" packets_encoded=%" PRIu64 " open_ok=%d",
+			output->filename ?: "(mem stream)",
+			output->kind ? output->kind : "(unknown)",
+			output->frames_written, output->packets_encoded, output->open_ok);
 
 	bool ret = false;
 	if (output->fmtctx->pb)
@@ -672,20 +697,46 @@ void output_close(metafile_t *mf, output_t *output, tag_t *tag, bool discard) {
 	if (!output)
 		return;
 	bool do_delete = !(output_storage & OUTPUT_STORAGE_FILE);
+	const char *saved_fn = output->filename;
+	const char *saved_full = output->full_filename;
+	const char *saved_name = output->file_name;
+	const char *kind = output->kind ? output->kind : "(unknown)";
+	uint64_t frames = output->frames_written;
+	uint64_t encpkts = output->packets_encoded;
+	const char *callid = (mf && mf->call_id) ? mf->call_id : (mf ? mf->name : "(unknown)");
 	if (!discard) {
 		if (output_shutdown(output)) {
+			output->close_ok = 1;
 			db_close_stream(output);
 			notify_push_output(output, mf, tag);
 			s3_store(output, mf);
 			gcs_store(output, mf);
+			ilog(LOG_NOTICE, "output saved: call=%s%s%s full_path=%s file_name=%s"
+				" kind=%s frames_written=%" PRIu64 " packets_encoded=%" PRIu64
+				" discard=0 result=success",
+					FMT_M(callid),
+					saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
+					saved_name ? saved_name : "(none)",
+					kind, frames, encpkts);
 		}
-		else
+		else {
 			db_delete_stream(mf, output);
+			ilog(LOG_NOTICE, "output empty/not-saved: call=%s%s%s full_path=%s"
+				" kind=%s frames_written=%" PRIu64 " result=empty",
+					FMT_M(callid),
+					saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
+					kind, frames);
+		}
 	}
 	else {
 		output_shutdown(output);
 		do_delete = true;
 		db_delete_stream(mf, output);
+		ilog(LOG_NOTICE, "output discarded: call=%s%s%s full_path=%s kind=%s"
+			" frames_written=%" PRIu64 " result=discarded",
+				FMT_M(callid),
+				saved_fn ? saved_fn : (saved_full ? saved_full : "(mem)"),
+				kind, frames);
 	}
 	encoder_free(output->encoder);
 	if (output->filename && do_delete) {

@@ -109,6 +109,12 @@ static void meta_mix_file_output(metafile_t *mf) {
 	if (!mf->mix) {
 		mf->mix_out = output_new_ext(mf, "mix", "mixed", "mix");
 		mf->mix = mix_new(&mf->mix_lock, &mf->mix_out->sink, mf->media_rec_slots);
+		ilog(LOG_NOTICE, "recording lifecycle: event=mix-output-create call-id=%s%s%s"
+			" full_filename=%s file_name=%s kind=mixed file_format=%s",
+				FMT_M(mf->call_id ? mf->call_id : mf->name),
+				mf->mix_out->full_filename ? mf->mix_out->full_filename : "(none)",
+				mf->mix_out->file_name ? mf->mix_out->file_name : "(none)",
+				mf->mix_out->file_format ? mf->mix_out->file_format : "(default)");
 	}
 
 	db_do_stream(mf, mf->mix_out, NULL, 0);
@@ -273,12 +279,22 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 	unsigned int u;
 	int i;
 
-	if (!strcmp(section, "CALL-ID"))
+	if (!strcmp(section, "CALL-ID")) {
 		mf->call_id = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "PARENT"))
+		ilog(LOG_NOTICE, "recording lifecycle: event=call-id meta_name=%s%s%s call-id=%s%s%s",
+				FMT_M(mf->name), FMT_M(mf->call_id));
+	}
+	else if (!strcmp(section, "PARENT")) {
 		mf->parent = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "RANDOM_TAG"))
+		ilog(LOG_NOTICE, "recording lifecycle: event=parent meta_name=%s%s%s parent=%s call-id=%s%s%s",
+				FMT_M(mf->name), mf->parent,
+				FMT_M(mf->call_id ? mf->call_id : "(pending)"));
+	}
+	else if (!strcmp(section, "RANDOM_TAG")) {
 		mf->random_tag = g_string_chunk_insert(mf->gsc, content);
+		ilog(LOG_NOTICE, "recording lifecycle: event=random-tag meta_name=%s%s%s random_tag=%s",
+				FMT_M(mf->name), mf->random_tag);
+	}
 	else if (!strcmp(section, "METADATA"))
 		if (mf->forward_fd >= 0) {
 			ilog(LOG_INFO, "Connection already established, sending mid-call metadata %.*s", (int)len, content);
@@ -318,8 +334,12 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
 	else if (!strcmp(section, "SKIP_DATABASE"))
 		mf->skip_db = 1;
-	else if (!strcmp(section, "STARTED"))
+	else if (!strcmp(section, "STARTED")) {
 		mf->started = 1;
+		ilog(LOG_NOTICE, "recording lifecycle: event=started meta_name=%s%s%s call-id=%s%s%s reading_started=1",
+				FMT_M(mf->name),
+				FMT_M(mf->call_id ? mf->call_id : "(pending)"));
+	}
 
 	db_do_call(mf);
 	meta_mix_output(mf);
@@ -334,7 +354,8 @@ static metafile_t *metafile_get(char *name) {
 	if (mf)
 		goto out;
 
-	ilog(LOG_INFO, "New call for recording: '%s%s%s'", FMT_M(name));
+	ilog(LOG_NOTICE, "recording lifecycle: event=new meta_name=%s%s%s spool_dir=%s reading_started=0",
+			FMT_M(name), spool_dir);
 
 	mf = g_new0(__typeof(*mf), 1);
 	mf->gsc = g_string_chunk_new(0);
@@ -375,9 +396,13 @@ void metafile_change(char *name) {
 	// open file and seek to last known position
 	int fd = open(fnbuf, O_RDONLY);
 	if (fd == -1) {
-		ilog(LOG_ERR, "Failed to open %s%s%s: %s", FMT_M(fnbuf), strerror(errno));
+		ilog(LOG_ERR, "Failed to open metafile path=%s%s%s: %s (call reading not started)",
+				FMT_M(fnbuf), strerror(errno));
 		goto out;
 	}
+	ilog(LOG_NOTICE, "recording lifecycle: event=meta-read meta_name=%s%s%s full_path=%s pos=%zu call-id=%s%s%s",
+			FMT_M(name), fnbuf, mf->pos,
+			FMT_M(mf->call_id ? mf->call_id : "(pending)"));
 	if (lseek(fd, mf->pos, SEEK_SET) == (off_t) -1) {
 		ilog(LOG_ERR, "Failed to seek to end of file %s%s%s: %s", FMT_M(fnbuf), strerror(errno));
 		close(fd);
@@ -525,7 +550,40 @@ void metafile_delete(char *name) {
 	g_hash_table_remove(metafiles, mf->name);
 	pthread_mutex_unlock(&metafiles_lock);
 
-	ilog(LOG_INFO, "Recording for call '%s%s%s' finished", FMT_M(mf->name));
+	{
+		int stream_n = 0, reading_n = 0;
+		uint64_t pkts = 0, bytes = 0;
+		if (mf->streams) {
+			for (int i = 0; i < mf->streams->len; i++) {
+				stream_t *st = g_ptr_array_index(mf->streams, i);
+				if (!st)
+					continue;
+				stream_n++;
+				if (st->reading || st->fd != -1)
+					reading_n++;
+				pkts += st->packets_read;
+				bytes += st->bytes_read;
+			}
+		}
+		const char *mix_path = (mf->mix_out && mf->mix_out->filename)
+			? mf->mix_out->filename
+			: ((mf->mix_out && mf->mix_out->full_filename) ? mf->mix_out->full_filename : "(none)");
+		ilog(LOG_NOTICE, "recording lifecycle: event=finished meta_name=%s%s%s call-id=%s%s%s discard=%d started=%d"
+			" streams=%d reading_active=%d packets_total=%" PRIu64 " bytes_total=%" PRIu64
+			" mix_file=%s output_dest=%s output_path=%s random_tag=%s"
+			" forward_ok=%d forward_fail=%d result=%s",
+				FMT_M(mf->name),
+				FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
+				mf->discard, mf->started,
+				stream_n, reading_n, pkts, bytes,
+				mix_path,
+				mf->output_dest ? mf->output_dest : "(default)",
+				mf->output_path ? mf->output_path : "(default)",
+				mf->random_tag ? mf->random_tag : "(none)",
+				__atomic_load_n(&mf->forward_count, __ATOMIC_RELAXED),
+				__atomic_load_n(&mf->forward_failed, __ATOMIC_RELAXED),
+				mf->discard ? "discarded" : "success");
+	}
 
 	meta_destroy(mf);
 

@@ -83,6 +83,13 @@ struct stream_s {
 	int64_t start_time_us;
 	unsigned int media_sdp_id;
 	unsigned int channel_slot;
+	/* debug counters (log-level >= NOTICE / 5) */
+	uint64_t packets_read;
+	uint64_t bytes_read;
+	uint64_t packets_decode_ok;
+	uint64_t packets_decode_fail;
+	uint64_t packets_parse_fail;
+	unsigned int reading:1;
 };
 
 
@@ -124,6 +131,11 @@ struct ssrc_s {
 	decode_t *decoders[128];
 	output_t *output;
 	tls_fwd_t *tls_fwd;
+	/* debug counters */
+	uint64_t packets_in;
+	uint64_t packets_decoded;
+	uint64_t packets_decode_fail;
+	uint64_t packets_duped;
 };
 
 
@@ -189,6 +201,10 @@ struct metafile_s {
 	unsigned int db_metadata_done:1;
 	unsigned int skip_db:1;
 	unsigned int started:1;
+
+	/* debug counters rolled up across streams */
+	uint64_t packets_total;
+	uint64_t bytes_total;
 };
 
 
@@ -217,6 +233,12 @@ struct output_s {
 		 actual_format;
 
 	content_t *content;
+
+	/* debug write counters (visible at log-level >= NOTICE / 5) */
+	uint64_t frames_written;
+	uint64_t packets_encoded;
+	unsigned int open_ok:1;
+	unsigned int close_ok:1;
 };
 
 

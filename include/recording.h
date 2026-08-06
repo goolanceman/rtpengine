@@ -123,6 +123,8 @@ void recording_discard(call_t *call);
 #define meta_write_sdp_after(args...) _rm(sdp_after, args)
 
 void recording_finish(call_t *, bool discard);
+/* Rich LOG_NOTICE (level 5) lifecycle summary: paths, QoS, success/fail. */
+void recording_log_call_summary(call_t *call, const char *event, bool discard);
 
 
 
