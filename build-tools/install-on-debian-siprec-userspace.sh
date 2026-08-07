@@ -352,28 +352,50 @@ cmd_promote() {
 
   stop_prod
 
-  echo "==> install userspace to ALL discovered paths"
-  echo "    daemon paths:    ${DAEMON_PATHS[*]:-$DAEMON_PATH}"
-  echo "    recording paths: ${REC_PATHS[*]:-$REC_PATH}"
-  local p
-  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
-    echo "  install rtpengine -> $p"
-    install -m 755 "${BIN_DIR}/rtpengine" "$p"
+  echo "==> install userspace to ALL target paths (force standard locations)"
+  # Always overwrite Debian/system paths — discovery alone was missing ExecStart targets
+  for p in /usr/bin/rtpengine /usr/local/bin/rtpengine "$DAEMON_PATH"; do
+    [[ -n "${p:-}" ]] && DAEMON_PATHS+=("$p")
   done
-  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
-    echo "  install rtpengine-recording -> $p"
-    install -m 755 "${BIN_DIR}/rtpengine-recording" "$p"
+  for p in /usr/bin/rtpengine-recording /usr/sbin/rtpengine-recording \
+           /bin/rtpengine-recording /usr/local/bin/rtpengine-recording "$REC_PATH"; do
+    [[ -n "${p:-}" ]] && REC_PATHS+=("$p")
   done
-  file "$DAEMON_PATH" "$REC_PATH" 2>/dev/null || true
-  local ok=1
-  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
-    verify_rich_marker "$p" 'recording DETECT' 'daemon' || ok=0
+  mapfile -t DAEMON_PATHS < <(printf '%s\n' "${DAEMON_PATHS[@]:-}" | awk 'NF && !seen[$0]++')
+  mapfile -t REC_PATHS < <(printf '%s\n' "${REC_PATHS[@]:-}" | awk 'NF && !seen[$0]++')
+
+  echo "    daemon paths:    ${DAEMON_PATHS[*]}"
+  echo "    recording paths: ${REC_PATHS[*]}"
+
+  install_one() {
+    local src="$1" dest="$2" label="$3"
+    [[ -d "$(dirname "$dest")" ]] || { echo "  skip $dest (no parent dir)"; return 0; }
+    echo "  install $label -> $dest"
+    install -m 755 "$src" "$dest"
+    local s1 s2
+    s1=$(sha256sum "$src" | awk '{print $1}')
+    s2=$(sha256sum "$dest" | awk '{print $1}')
+    echo "    sha src=$s1"
+    echo "    sha dst=$s2"
+    [[ "$s1" == "$s2" ]] || die "hash mismatch installing $label to $dest"
+  }
+
+  for p in "${DAEMON_PATHS[@]}"; do
+    install_one "${BIN_DIR}/rtpengine" "$p" rtpengine
   done
-  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
-    verify_rich_marker "$p" 'recording NEW' 'recording' || ok=0
-    verify_rich_marker "$p" 'status=SAVED' 'recording' || ok=0
+  for p in "${REC_PATHS[@]}"; do
+    install_one "${BIN_DIR}/rtpengine-recording" "$p" rtpengine-recording
   done
-  [[ $ok -eq 1 ]] || die "rich-log markers missing after install — wrong source bins?"
+
+  file /usr/bin/rtpengine /usr/bin/rtpengine-recording 2>/dev/null || true
+  # hard requirements for siprec unit: /usr/bin/rtpengine-recording MUST be rich-log
+  verify_rich_marker /usr/bin/rtpengine-recording 'recording NEW' 'usr-bin-recording' \
+    || die "FAILED: /usr/bin/rtpengine-recording still lacks rich logs — refuse to continue"
+  verify_rich_marker /usr/bin/rtpengine-recording 'status=SAVED' 'usr-bin-recording' \
+    || die "FAILED: /usr/bin/rtpengine-recording missing status=SAVED"
+  # daemon if present
+  [[ -e /usr/bin/rtpengine ]] && verify_rich_marker /usr/bin/rtpengine 'recording DETECT' 'usr-bin-daemon' || true
+  [[ -e /usr/local/bin/rtpengine ]] && verify_rich_marker /usr/local/bin/rtpengine 'recording DETECT' 'local-bin-daemon' || true
 
   echo "==> kernel module (unchanged — expect xt_RTPENGINE 12.5)"
   lsmod | grep -iE 'rtp|RTP' || echo "WARN: no rtp module loaded yet"
@@ -396,6 +418,20 @@ cmd_promote() {
   [[ -n "${rp:-}" ]] && verify_rich_marker "$rp" 'recording DETECT' 'running-daemon'
   [[ -n "${rr:-}" ]] && verify_rich_marker "$rr" 'recording NEW' 'running-recording'
   [[ -n "${rr:-}" ]] && verify_rich_marker "$rr" 'status=SAVED' 'running-recording'
+  if [[ -n "${rr:-}" ]] && command -v sha256sum >/dev/null; then
+    s1=$(sha256sum "${BIN_DIR}/rtpengine-recording" | awk '{print $1}')
+    s2=$(sha256sum "$rr" | awk '{print $1}')
+    echo "  recording src sha=$s1"
+    echo "  recording run sha=$s2 path=$rr"
+    [[ "$s1" == "$s2" ]] || die "RUNNING rtpengine-recording is NOT the promoted binary (still old?). path=$rr"
+  fi
+  if [[ -n "${rp:-}" ]] && command -v sha256sum >/dev/null; then
+    s1=$(sha256sum "${BIN_DIR}/rtpengine" | awk '{print $1}')
+    s2=$(sha256sum "$rp" | awk '{print $1}')
+    echo "  daemon src sha=$s1"
+    echo "  daemon run sha=$s2 path=$rp"
+    [[ "$s1" == "$s2" ]] || die "RUNNING rtpengine is NOT the promoted binary. path=$rp"
+  fi
 
   echo
   echo "PROMOTE DONE. Watch logs:"
