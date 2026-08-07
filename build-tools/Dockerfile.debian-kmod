@@ -1,0 +1,53 @@
+# Build nft_rtpengine.ko for Debian 13 (trixie) headers + package DKMS sources.
+# Used to match debian/bins userspace from the same git tree.
+
+FROM debian:trixie-slim AS kmod
+ARG KVER=
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl dkms kmod \
+    linux-headers-amd64 \
+    python3 pkg-config git file rsync \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/rtpengine
+COPY . .
+
+# Resolve target kernel for headers meta package (prefer ARG, else uname of installed headers)
+RUN set -e; \
+  if [ -n "$KVER" ]; then K="$KVER"; \
+  else K=$(ls -1d /lib/modules/*/build 2>/dev/null | head -1 | sed 's|.*/modules/||;s|/build||'); \
+  fi; \
+  echo "KVER=$K" > /tmp/kver.env; \
+  test -d "/lib/modules/$K/build"; \
+  echo "Building nft_rtpengine for kernel $K"; \
+  cd kernel-module; \
+  make clean || true; \
+  make -j"$(nproc)" KSRC="/lib/modules/$K/build" KERNELRELEASE="$K" \
+    RTPENGINE_VERSION="$(cat /usr/src/rtpengine/debian/changelog | head -1 | sed -n 's/.*(\([^)]*\)).*/\1/p')"; \
+  mkdir -p /out/kmod/"$K"; \
+  cp -a nft_rtpengine.ko /out/kmod/"$K"/; \
+  file /out/kmod/"$K"/nft_rtpengine.ko; \
+  modinfo /out/kmod/"$K"/nft_rtpengine.ko | head -20 || true
+
+# Stage DKMS source tree matching debian packaging layout
+RUN set -e; \
+  VER=$(sed -n '1s/.*(\([^)]*\)).*/\1/p' debian/changelog); \
+  UPSTREAM=$(echo "$VER" | sed 's/-[^-]*$//'); \
+  SRC="ngcp-rtpengine-${UPSTREAM}"; \
+  mkdir -p "/out/dkms-src/${SRC}"; \
+  cp -a kernel-module/*.c kernel-module/*.h kernel-module/*.inc \
+        kernel-module/Makefile kernel-module/gen-* \
+        "/out/dkms-src/${SRC}/" 2>/dev/null || true; \
+  # some trees only have .inc under kernel-module or none
+  cp -a kernel-module/* "/out/dkms-src/${SRC}/" 2>/dev/null || true; \
+  sed "s/#MODULE_VERSION#/${UPSTREAM}/g" debian/ngcp-rtpengine-kernel-dkms.dkms \
+    > "/out/dkms-src/${SRC}/dkms.conf"; \
+  echo "$VER" > /out/VERSION; \
+  echo "$UPSTREAM" > /out/UPSTREAM; \
+  ls -la /out /out/kmod /out/dkms-src
+
+FROM scratch AS export
+COPY --from=kmod /out /out

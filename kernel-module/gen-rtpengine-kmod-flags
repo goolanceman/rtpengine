@@ -79,4 +79,21 @@ TESTEOF
   fi
 
   rm -rf "${nft_test_dir}"
+
+  # Detect NFT_REDUCE_READONLY / nft_expr_ops.reduce (removed again on some
+  # 6.12 stable trees via "nf_tables: disable expression reduction infra").
+  reduce_test_dir=$(mktemp -d)
+  cat > "${reduce_test_dir}/reduce_test.c" <<'TESTEOF'
+#include <linux/module.h>
+#include <net/netfilter/nf_tables.h>
+static const struct nft_expr_ops __attribute__((unused)) test_ops = {
+	.reduce = NFT_REDUCE_READONLY,
+};
+MODULE_LICENSE("GPL");
+TESTEOF
+  echo "obj-m := reduce_test.o" > "${reduce_test_dir}/Makefile"
+  if env -i PATH="$PATH" make -j1 -C "${KSRC}" M="${reduce_test_dir}" modules >/dev/null 2>&1; then
+    echo "ccflags-y += -DHAVE_NFT_REDUCE_READONLY"
+  fi
+  rm -rf "${reduce_test_dir}"
 fi
