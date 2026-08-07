@@ -87,15 +87,42 @@ cmd_install_units() {
   assert_prod
 }
 
+wait_active() {
+  local u="$1" i
+  for i in $(seq 1 15); do
+    if systemctl is-active --quiet "$u"; then
+      echo "active $u"
+      return 0
+    fi
+    # failed / activating-then-fail
+    local st
+    st=$(systemctl is-active "$u" 2>/dev/null || true)
+    if [[ "$st" == "failed" || "$st" == "inactive" ]]; then
+      # allow a couple of restart cycles during first seconds
+      if [[ $i -ge 5 && "$st" == "failed" ]]; then
+        break
+      fi
+    fi
+    sleep 1
+  done
+  echo "ERROR: $u not active (state=$(systemctl is-active "$u" 2>/dev/null || echo unknown))" >&2
+  systemctl status "$u" --no-pager -l 2>&1 | head -40 >&2 || true
+  journalctl -u "$u" --since "2 min ago" --no-pager 2>&1 | tail -40 >&2 || true
+  return 1
+}
+
 cmd_start() {
   need_root start
   systemctl cat "$TEST_D" >/dev/null 2>&1 || die "run: sudo $0 install-units"
   prep
+  systemctl reset-failed "$TEST_D" "$TEST_R" 2>/dev/null || true
   systemctl start "$TEST_R"
-  sleep 1
+  wait_active "$TEST_R" || die "rtpengine-recording-test failed — fix bins/libs/config then re-run start"
   systemctl start "$TEST_D"
-  sleep 2
+  wait_active "$TEST_D" || die "rtpengine-test failed — fix bins/libs/ports then re-run start"
   systemctl is-active "$TEST_D" "$TEST_R"
+  # show what is listening
+  ss -tulnp 2>/dev/null | grep -E '23222|18080|19900|13222' || true
   assert_prod
   echo "Test NG ${NG_HOST}:${NG_PORT} table=${TABLE} spool=${SPOOL}"
   echo "Next: sudo $0 smoke"
@@ -124,8 +151,13 @@ cmd_logs() { journalctl -u "$TEST_D" -u "$TEST_R" -n "${1:-80}" --no-pager; }
 
 cmd_smoke() {
   need_root smoke
-  systemctl is-active --quiet "$TEST_D" || die "start test first"
-  systemctl is-active --quiet "$TEST_R" || die "start test first"
+  if ! systemctl is-active --quiet "$TEST_D" || ! systemctl is-active --quiet "$TEST_R"; then
+    echo "ERROR: test units not both active:" >&2
+    systemctl is-active "$TEST_D" "$TEST_R" 2>&1 || true
+    systemctl status "$TEST_D" "$TEST_R" --no-pager -l 2>&1 | head -50 >&2 || true
+    journalctl -u "$TEST_D" -u "$TEST_R" --since "3 min ago" --no-pager 2>&1 | tail -50 >&2 || true
+    die "start test first (sudo $0 start) — see status/logs above"
+  fi
   python3 "${ROOT}/smoke-ng.py"
   echo "=== rich logs (TEST units only) ==="
   journalctl -u "$TEST_D" -u "$TEST_R" --since "2 min ago" --no-pager \
