@@ -4,11 +4,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(cd "${ROOT}/.." && pwd)"
-# BIN_DIR: directory containing rtpengine + rtpengine-recording.
-# Default = package bins/ (Debian glibc). On RHEL lab use:
-#   BIN_DIR=/path/to/rhel-binaries-12.5.1.31 sudo -E bash run-test.sh ...
-BIN="${BIN_DIR:-${PKG}/bins}"
-BIN="$(cd "${BIN}" && pwd)"
+# BIN resolved lazily in resolve_bin() so status/stop/logs work without BIN_DIR.
+# On RHEL lab: BIN_DIR=/path/to/rhel-binaries sudo -E bash run-test.sh install-units
+BIN=""
 UNIT_DIR=/etc/systemd/system
 PROD_D=rtpengine.service
 PROD_R=rtpengine-recording.service
@@ -23,12 +21,33 @@ OUTDIR=/tmp/recordings-test-12.5
 die() { echo "ERROR: $*" >&2; exit 1; }
 need_root() { [[ $(id -u) -eq 0 ]] || die "run as root: sudo $0 $*"; }
 
+resolve_bin() {
+  # Priority: BIN_DIR env → .bin-dir from last install-units → ../bins (debian package)
+  local cand=""
+  if [[ -n "${BIN_DIR:-}" ]]; then
+    cand="${BIN_DIR}"
+  elif [[ -f "${ROOT}/.bin-dir" ]]; then
+    cand="$(cat "${ROOT}/.bin-dir")"
+  elif [[ -d "${PKG}/bins" ]]; then
+    cand="${PKG}/bins"
+  elif [[ -d "${ROOT}/../../release-bins/12.5.1.31-rich-logs/rhel" ]]; then
+    cand="${ROOT}/../../release-bins/12.5.1.31-rich-logs/rhel"
+  elif [[ -d "${ROOT}/../../release-bins/12.5.1.31-rich-logs/debian" ]]; then
+    cand="${ROOT}/../../release-bins/12.5.1.31-rich-logs/debian"
+  else
+    die "no bins found; set BIN_DIR=... or run from package with bins/ next to harness"
+  fi
+  [[ -d "$cand" ]] || die "bins dir missing: $cand (set BIN_DIR=...)"
+  BIN="$(cd "$cand" && pwd)"
+}
+
 assert_prod() {
   systemctl is-active --quiet "$PROD_D" 2>/dev/null && echo "OK prod $PROD_D active" || echo "NOTE: prod $PROD_D not active"
   systemctl is-active --quiet "$PROD_R" 2>/dev/null && echo "OK prod $PROD_R active" || true
 }
 
 check_bins() {
+  resolve_bin
   [[ -x "${BIN}/rtpengine" ]] || die "missing ${BIN}/rtpengine (set BIN_DIR=...)"
   [[ -x "${BIN}/rtpengine-recording" ]] || die "missing ${BIN}/rtpengine-recording (set BIN_DIR=...)"
   # Fail fast if libs clearly wrong for this host (e.g. Debian bins on EL8)
