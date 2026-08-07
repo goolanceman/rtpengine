@@ -203,6 +203,28 @@ static void meta_metadata(metafile_t *mf, char *content) {
 	db_do_call(mf);
 	if (forward_to)
 		start_forwarding_capture(mf, content);
+
+	{
+		const char *cid = mf->call_id ? mf->call_id : (mf->name ? mf->name : "(unknown)");
+		str key_session = STR_CONST_INIT("session_id");
+		str key_calling = STR_CONST_INIT("calling");
+		str key_called = STR_CONST_INIT("called");
+		const char *session_id = "(none)", *calling = "(none)", *called = "(none)";
+		str_q *q;
+		if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_session)) && q->length && q->head->data)
+			session_id = ((str *)q->head->data)->s;
+		if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_calling)) && q->length && q->head->data)
+			calling = ((str *)q->head->data)->s;
+		if ((q = t_hash_table_lookup(mf->metadata_parsed, &key_called)) && q->length && q->head->data)
+			called = ((str *)q->head->data)->s;
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s"
+			"  session_id=%s  calling=%s  called=%s"
+			"  metadata=%s"
+			"  | Call identity from NG metadata",
+			FMT_M(cid), session_id, calling, called,
+			mf->metadata ? mf->metadata : "(none)");
+	}
 }
 
 
@@ -243,18 +265,35 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		tag_metadata(mf, lu, content);
 	else if (sscanf_match(section, "LABEL %lu", &lu) == 1)
 		tag_label(mf, lu, content);
-	else if (sscanf_match(section, "RECORDING %u", &u) == 1)
+	else if (sscanf_match(section, "RECORDING %u", &u) == 1) {
 		mf->recording_on = u ? 1 : 0;
+		ilog(LOG_NOTICE,
+			"recording FLAG      call-id=%s%s%s  recording_on=%d  | Recording %s",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			mf->recording_on, mf->recording_on ? "enabled" : "disabled");
+	}
 	else if (sscanf_match(section, "FORWARDING %u", &u) == 1)
 		mf->forwarding_on = u ? 1 : 0;
 	else if (sscanf_match(section, "STREAM %lu FORWARDING %u", &lu, &u) == 2)
 		stream_forwarding_on(mf, lu, u);
-	else if (!strcmp(section, "RECORDING_FILE"))
+	else if (!strcmp(section, "RECORDING_FILE")) {
 		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "RECORDING_PATH"))
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  recording_file=%s  | Explicit output file override",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATH")) {
 		mf->output_path = g_string_chunk_insert(mf->gsc, content);
-	else if (!strcmp(section, "RECORDING_PATTERN"))
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  output_dir=%s  | Audio files will be written under this directory",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATTERN")) {
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  filename_pattern=%s  | Basename pattern for audio files",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
 	else if (!strcmp(section, "SKIP_DATABASE"))
 		mf->skip_db = 1;
 }
@@ -268,7 +307,10 @@ static metafile_t *metafile_get(char *name) {
 	if (mf)
 		goto out;
 
-	ilog(LOG_INFO, "New call for recording: '%s%s%s'", FMT_M(name));
+	ilog(LOG_NOTICE,
+			"recording NEW       meta=%s%s%s  spool=%s"
+			"  | New recording metafile detected in spool",
+			FMT_M(name), spool_dir ? spool_dir : "(unset)");
 
 	mf = g_slice_alloc0(sizeof(*mf));
 	mf->gsc = g_string_chunk_new(0);
@@ -430,7 +472,16 @@ void metafile_delete(char *name) {
 	g_hash_table_remove(metafiles, mf->name);
 	pthread_mutex_unlock(&metafiles_lock);
 
-	ilog(LOG_INFO, "Recording for call '%s%s%s' finished", FMT_M(mf->name));
+	ilog(LOG_NOTICE,
+		"recording FINISH    call-id=%s%s%s  meta=%s%s%s  discard=%d"
+		"  output_dir=%s  recording_file=%s  pattern=%s"
+		"  | Recording metafile finished; closing streams/outputs",
+		FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
+		FMT_M(mf->name),
+		mf->discard ? 1 : 0,
+		mf->output_path ? mf->output_path : "(default)",
+		mf->output_dest ? mf->output_dest : "(auto)",
+		mf->output_pattern ? mf->output_pattern : "(default)");
 
 	meta_destroy(mf);
 

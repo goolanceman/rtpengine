@@ -1,6 +1,7 @@
 #include "recording.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <glib.h>
 #include <sys/types.h>
@@ -352,15 +353,24 @@ static void rec_setup_monologue(struct call_monologue *ml) {
 void recording_start_daemon(call_t *call) {
 	if (call->recording) {
 		// already active
+		ilog(LOG_NOTICE,
+			"recording SKIP      call-id=" STR_FORMAT_M
+			"  reason=already-active  recording_on=%d"
+			"  | Recording already running; start ignored",
+			STR_FMT_M(&call->callid),
+			CALL_ISSET(call, RECORDING_ON) ? 1 : 0);
 		recording_update_flags(call, true);
 		return;
 	}
 
 	if (!spooldir) {
-		ilog(LOG_ERR, "Call recording requested, but no spool directory configured");
+		ilog(LOG_ERR,
+			"recording FAIL      call-id=" STR_FORMAT_M
+			"  reason=spool-unset"
+			"  | CANNOT start recording: spool directory not configured",
+			STR_FMT_M(&call->callid));
 		return;
 	}
-	ilog(LOG_NOTICE, "Turning on call recording.");
 
 	call->recording = g_slice_alloc0(sizeof(struct recording));
 	g_autoptr(char) escaped_callid = g_uri_escape_string(call->callid.s, NULL, 0);
@@ -374,6 +384,74 @@ void recording_start_daemon(call_t *call) {
 	}
 
 	_rm(init_struct, call);
+
+	{
+		const char *method_s = selected_recording_method ? selected_recording_method->name : "(none)";
+		const char *proc_meta_s = (call->recording && call->recording->proc.meta_filepath)
+			? call->recording->proc.meta_filepath : "(none)";
+		const char *pcap_file_s = (call->recording && call->recording->pcap.recording_path)
+			? call->recording->pcap.recording_path : "(none)";
+		const char *meta_prefix = call->recording_meta_prefix.len
+			? call->recording_meta_prefix.s : "(none)";
+		const char *rand_tag = call->recording_random_tag.len
+			? call->recording_random_tag.s : "(none)";
+		unsigned int proc_idx = (call->recording
+				&& call->recording->proc.call_idx != UNINIT_IDX)
+			? call->recording->proc.call_idx : 0;
+		int proc_ok = (call->recording && call->recording->proc.call_idx != UNINIT_IDX) ? 1 : 0;
+		int pcap_ok = (call->recording && call->recording->pcap.recording_pdumper) ? 1 : 0;
+		unsigned int ml_n = 0, media_n = 0, stream_n = 0;
+		for (__auto_type l = call->monologues.head; l; l = l->next) ml_n++;
+		for (__auto_type l = call->medias.head; l; l = l->next) media_n++;
+		for (__auto_type l = call->streams.head; l; l = l->next) stream_n++;
+
+		ilog(LOG_NOTICE,
+			"recording START     call-id=" STR_FORMAT_M
+			"  method=%s  spool=%s  meta_prefix=%s  random_tag=%s"
+			"  metadata=%s  recording_file=%s  path=%s  pattern=%s"
+			"  kernel_open=%d  kernel_call_idx=%u"
+			"  monologues=%u  medias=%u  streams=%u"
+			"  recording_on=%d  forwarding_on=%d"
+			"  | Recording started"
+			" (audio WAV written later by recording-daemon when media arrives)",
+			STR_FMT_M(&call->callid),
+			method_s,
+			spooldir ? spooldir : "(unset)",
+			meta_prefix, rand_tag,
+			call->metadata.len ? call->metadata.s : "(none)",
+			call->recording_file.len ? call->recording_file.s : "(auto)",
+			call->recording_path.len ? call->recording_path.s : "(default)",
+			call->recording_pattern.len ? call->recording_pattern.s : "(default)",
+			kernel.is_open ? 1 : 0, proc_idx,
+			ml_n, media_n, stream_n,
+			CALL_ISSET(call, RECORDING_ON) ? 1 : 0,
+			CALL_ISSET(call, REC_FORWARDING) ? 1 : 0);
+
+		if (proc_ok && proc_meta_s[0] != '(')
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=" STR_FORMAT_M
+				"  status=CREATED      type=proc-meta  path=%s"
+				"  kernel_call_idx=%u  meta_prefix=%s"
+				"  | Control metadata file created for recording-daemon",
+				STR_FMT_M(&call->callid), proc_meta_s, proc_idx, meta_prefix);
+		else if (!strcmp(method_s, "proc") || !strcmp(method_s, "all"))
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=" STR_FORMAT_M
+				"  status=NOT_CREATED  type=proc-meta  path=%s"
+				"  kernel_open=%d  spool=%s"
+				"  | Proc metadata NOT created"
+				" (is kernel table open? check /proc/rtpengine)",
+				STR_FMT_M(&call->callid), proc_meta_s,
+				kernel.is_open ? 1 : 0,
+				spooldir ? spooldir : "(unset)");
+
+		if (pcap_ok && pcap_file_s[0] != '(')
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=" STR_FORMAT_M
+				"  status=CREATED      type=pcap  path=%s"
+				"  | PCAP capture file opened",
+				STR_FMT_M(&call->callid), pcap_file_s);
+	}
 
 	// update main call flags (global recording/forwarding on/off) to prevent recording
 	// features from being started when the stream info (through setup_stream) is
@@ -412,7 +490,21 @@ void recording_stop_daemon(call_t *call) {
 		return;
 
 	// check if all recording options are disabled
-	if (CALL_ISSET(call, RECORDING_ON) || CALL_ISSET(call, REC_FORWARDING)) {
+	if (CALL_ISSET(call, RECORDING_ON)) {
+		ilog(LOG_NOTICE,
+			"recording SKIP      call-id=" STR_FORMAT_M
+			"  reason=still-on"
+			"  | Stop ignored; recording flag still enabled",
+			STR_FMT_M(&call->callid));
+		recording_update_flags(call, true);
+		return;
+	}
+	if (CALL_ISSET(call, REC_FORWARDING)) {
+		ilog(LOG_NOTICE,
+			"recording SKIP      call-id=" STR_FORMAT_M
+			"  reason=forwarding-on"
+			"  | Stop ignored; rec-forwarding still enabled",
+			STR_FMT_M(&call->callid));
 		recording_update_flags(call, true);
 		return;
 	}
@@ -420,12 +512,28 @@ void recording_stop_daemon(call_t *call) {
 	for (__auto_type l = call->monologues.head; l; l = l->next) {
 		struct call_monologue *ml = l->data;
 		if (ML_ISSET(ml, REC_FORWARDING)) {
+			ilog(LOG_NOTICE,
+				"recording SKIP      call-id=" STR_FORMAT_M
+				"  reason=ml-forwarding-on"
+				"  | Stop ignored; monologue forwarding still enabled",
+				STR_FMT_M(&call->callid));
 			recording_update_flags(call, true);
 			return;
 		}
 	}
 
-	ilog(LOG_NOTICE, "Turning off call recording.");
+	ilog(LOG_NOTICE,
+		"recording STOP      call-id=" STR_FORMAT_M
+		"  method=%s  metadata=%s  proc_meta=%s  pcap_file=%s"
+		"  path=%s  pattern=%s"
+		"  | Turning off call recording",
+		STR_FMT_M(&call->callid),
+		selected_recording_method ? selected_recording_method->name : "(none)",
+		call->metadata.len ? call->metadata.s : "(none)",
+		call->recording->proc.meta_filepath ? call->recording->proc.meta_filepath : "(none)",
+		call->recording->pcap.recording_path ? call->recording->pcap.recording_path : "(none)",
+		call->recording_path.len ? call->recording_path.s : "(default)",
+		call->recording_pattern.len ? call->recording_pattern.s : "(default)");
 	recording_finish(call, false);
 }
 // lock must be held
@@ -438,7 +546,13 @@ void recording_pause(call_t *call) {
 	CALL_CLEAR(call, RECORDING_ON);
 	if (!call->recording)
 		return;
-	ilog(LOG_NOTICE, "Pausing call recording.");
+	ilog(LOG_NOTICE,
+		"recording PAUSE     call-id=" STR_FORMAT_M
+		"  metadata=%s  proc_meta=%s"
+		"  | Recording paused",
+		STR_FMT_M(&call->callid),
+		call->metadata.len ? call->metadata.s : "(none)",
+		call->recording->proc.meta_filepath ? call->recording->proc.meta_filepath : "(none)");
 	recording_update_flags(call, true);
 }
 // lock must be held
@@ -446,7 +560,18 @@ void recording_discard(call_t *call) {
 	CALL_CLEAR(call, RECORDING_ON);
 	if (!call->recording)
 		return;
-	ilog(LOG_NOTICE, "Turning off call recording and discarding outputs.");
+	ilog(LOG_NOTICE,
+		"recording DISCARD   call-id=" STR_FORMAT_M
+		"  method=%s  metadata=%s  proc_meta=%s  pcap_file=%s"
+		"  path=%s  pattern=%s"
+		"  | Turning off recording and discarding outputs (files will NOT be kept)",
+		STR_FMT_M(&call->callid),
+		selected_recording_method ? selected_recording_method->name : "(none)",
+		call->metadata.len ? call->metadata.s : "(none)",
+		call->recording->proc.meta_filepath ? call->recording->proc.meta_filepath : "(none)",
+		call->recording->pcap.recording_path ? call->recording->pcap.recording_path : "(none)",
+		call->recording_path.len ? call->recording_path.s : "(default)",
+		call->recording_pattern.len ? call->recording_pattern.s : "(default)");
 	recording_finish(call, true);
 }
 
@@ -466,15 +591,42 @@ void detect_setup_recording(call_t *call, const sdp_ng_flags *flags) {
 		return;
 
 	const str *recordcall = &flags->record_call_str;
+	/* Prefer call->* copies (NUL-terminated). flags->* may point into NG buffer. */
+	const char *md = call->metadata.len ? call->metadata.s : "(none)";
+	const char *rpath = call->recording_path.len ? call->recording_path.s : "(default)";
+	const char *rpat = call->recording_pattern.len ? call->recording_pattern.s : "(default)";
 
-	if (!str_cmp(recordcall, "yes") || !str_cmp(recordcall, "on") || flags->record_call)
+	if (!str_cmp(recordcall, "yes") || !str_cmp(recordcall, "on") || flags->record_call) {
+		ilog(LOG_NOTICE,
+			"recording DETECT    call-id=" STR_FORMAT_M
+			"  action=start  record_call=yes"
+			"  metadata=%s  path=%s  pattern=%s"
+			"  | NG requested recording start",
+			STR_FMT_M(&call->callid), md, rpath, rpat);
 		recording_start(call);
-	else if (!str_cmp(recordcall, "no") || !str_cmp(recordcall, "off"))
+	}
+	else if (!str_cmp(recordcall, "no") || !str_cmp(recordcall, "off")) {
+		ilog(LOG_NOTICE,
+			"recording DETECT    call-id=" STR_FORMAT_M
+			"  action=stop  record_call=no  metadata=%s"
+			"  | NG requested recording stop",
+			STR_FMT_M(&call->callid), md);
 		recording_stop(call);
-	else if (!str_cmp(recordcall, "discard") || flags->discard_recording)
+	}
+	else if (!str_cmp(recordcall, "discard") || flags->discard_recording) {
+		ilog(LOG_NOTICE,
+			"recording DETECT    call-id=" STR_FORMAT_M
+			"  action=discard  record_call=discard  metadata=%s"
+			"  | NG requested discard recording",
+			STR_FMT_M(&call->callid), md);
 		recording_discard(call);
+	}
 	else if (recordcall->len != 0)
-		ilog(LOG_INFO, "\"record-call\" flag "STR_FORMAT" is invalid flag.", STR_FMT(recordcall));
+		ilog(LOG_NOTICE,
+			"recording DETECT    call-id=" STR_FORMAT_M
+			"  action=none  record_call=" STR_FORMAT
+			"  | Unknown record_call value (ignored)",
+			STR_FMT_M(&call->callid), STR_FMT(recordcall));
 }
 
 static void rec_pcap_init(call_t *call) {
@@ -660,9 +812,15 @@ static char *recording_setup_file(struct recording *recording, const str *meta_p
 	if (recording->pcap.recording_pdumper == NULL) {
 		pcap_close(recording->pcap.recording_pd);
 		recording->pcap.recording_pd = NULL;
-		ilog(LOG_INFO, "Failed to write recording file: %s", recording_path);
+		ilog(LOG_ERROR,
+				"recording FILE      status=NOT_CREATED  type=pcap  path=%s"
+				"  | FAILED to open PCAP capture file",
+				recording_path);
 	} else {
-		ilog(LOG_INFO, "Writing recording file: %s", recording_path);
+		ilog(LOG_NOTICE,
+				"recording FILE      status=CREATED      type=pcap  path=%s"
+				"  | PCAP capture file opened for writing",
+				recording_path);
 	}
 
 	return recording_path;
@@ -672,10 +830,21 @@ static char *recording_setup_file(struct recording *recording, const str *meta_p
  * Flushes PCAP file, closes the dumper and descriptors, and frees object memory.
  */
 static void rec_pcap_recording_finish_file(struct recording *recording) {
+	const char *path = recording->pcap.recording_path ? recording->pcap.recording_path : "(none)";
+	uint64_t pkts = recording->pcap.packet_num;
 	if (recording->pcap.recording_pdumper != NULL) {
 		pcap_dump_flush(recording->pcap.recording_pdumper);
 		pcap_dump_close(recording->pcap.recording_pdumper);
+		ilog(LOG_NOTICE,
+			"recording FILE      status=SAVED         type=pcap  path=%s  packets=%" PRIu64
+			"  | PCAP capture file closed and saved",
+			path, pkts);
 		g_clear_pointer(&recording->pcap.recording_path, free);
+	} else {
+		ilog(LOG_NOTICE,
+			"recording FILE      status=NOT_CREATED  type=pcap  path=%s  packets=%" PRIu64
+			"  | PCAP capture had no open dumper (nothing saved)",
+			path, pkts);
 	}
 	if (recording->pcap.recording_pd != NULL) {
 		pcap_close(recording->pcap.recording_pd);
@@ -773,6 +942,62 @@ void recording_finish(call_t *call, bool discard) {
 	if (!call || !call->recording)
 		return;
 
+	{
+		struct recording *rec = call->recording;
+		const char *method = selected_recording_method ? selected_recording_method->name : "(none)";
+		const char *metadata = call->metadata.len ? call->metadata.s : "(none)";
+		const char *rec_path = call->recording_path.len ? call->recording_path.s : "(default)";
+		const char *rec_pat = call->recording_pattern.len ? call->recording_pattern.s : "(default)";
+		const char *proc_meta = rec->proc.meta_filepath ? rec->proc.meta_filepath : "(none)";
+		const char *pcap_path = rec->pcap.recording_path ? rec->pcap.recording_path : "(none)";
+		const char *meta_prefix = call->recording_meta_prefix.len ? call->recording_meta_prefix.s : "(none)";
+		uint64_t pcap_pkts = rec->pcap.packet_num;
+		unsigned int stream_n = 0;
+		uint64_t rtp_in = 0, rtp_out = 0;
+		for (__auto_type l = call->streams.head; l; l = l->next) {
+			struct packet_stream *ps = l->data;
+			if (!ps)
+				continue;
+			stream_n++;
+			if (ps->stats_in)
+				rtp_in += atomic64_get_na(&ps->stats_in->packets);
+			if (ps->stats_out)
+				rtp_out += atomic64_get_na(&ps->stats_out->packets);
+		}
+		const char *result, *file_status, *human;
+		if (discard) {
+			result = "discarded";
+			file_status = "DISCARDED";
+			human = "Call finished; recording DISCARDED (file will not be kept)";
+		} else if (pcap_pkts <= 1 && rtp_in == 0 && rtp_out == 0) {
+			result = "empty";
+			file_status = "NOT_CREATED";
+			human = "Call finished; NO RTP media seen (audio file likely NOT created)";
+		} else {
+			result = "success";
+			file_status = "CREATED";
+			human = "Call finished; media was present (see recording-daemon for final audio file)";
+		}
+		ilog(LOG_NOTICE,
+			"recording FINISH    call-id=" STR_FORMAT_M
+			"  outcome=%s  file_status=%s  method=%s"
+			"  metadata=%s  path=%s  pattern=%s"
+			"  spool=%s  meta_prefix=%s"
+			"  proc_meta=%s  pcap_file=%s  kernel_call_idx=%u"
+			"  rtp_in=%" PRIu64 "p  rtp_out=%" PRIu64 "p  pcap_packets=%" PRIu64
+			"  streams=%u  discard=%d"
+			"  | %s",
+			STR_FMT_M(&call->callid),
+			result, file_status, method,
+			metadata, rec_path, rec_pat,
+			spooldir ? spooldir : "(unset)", meta_prefix,
+			proc_meta, pcap_path,
+			(rec->proc.call_idx != UNINIT_IDX) ? rec->proc.call_idx : 0,
+			rtp_in, rtp_out, pcap_pkts,
+			stream_n, discard ? 1 : 0,
+			human);
+	}
+
 	__call_unkernelize(call, "recording finished");
 
 	struct recording *recording = call->recording;
@@ -864,18 +1089,42 @@ static void proc_init(call_t *call) {
 
 	recording->proc.call_idx = UNINIT_IDX;
 	if (!kernel.is_open) {
-		ilog(LOG_WARN, "Call recording through /proc interface requested, but kernel table not open");
+		ilog(LOG_WARN,
+			"recording FAIL      call-id=" STR_FORMAT_M
+			"  reason=kernel-table-not-open  method=proc  spool=%s  meta_prefix=%s"
+			"  | CANNOT start proc recording: kernel table not open"
+			" (load module; check /proc/rtpengine/<table>/control)",
+			STR_FMT_M(&call->callid),
+			spooldir ? spooldir : "(unset)",
+			call->recording_meta_prefix.len ? call->recording_meta_prefix.s : "(none)");
 		return;
 	}
 	recording->proc.call_idx = kernel_add_call(call->recording_meta_prefix.s);
 	if (recording->proc.call_idx == UNINIT_IDX) {
-		ilog(LOG_ERR, "Failed to add call to kernel recording interface: %s", strerror(errno));
+		ilog(LOG_ERR,
+			"recording FAIL      call-id=" STR_FORMAT_M
+			"  reason=kernel-add-call  err=%s  meta_prefix=%s"
+			"  | FAILED to register call with kernel recording interface",
+			STR_FMT_M(&call->callid),
+			strerror(errno),
+			call->recording_meta_prefix.len ? call->recording_meta_prefix.s : "(none)");
 		return;
 	}
-	ilog(LOG_DEBUG, "kernel call idx is %u", recording->proc.call_idx);
 
 	recording->proc.meta_filepath = file_path_str(call->recording_meta_prefix.s, "/", ".meta");
 	unlink(recording->proc.meta_filepath); // start fresh XXX good idea?
+
+	ilog(LOG_NOTICE,
+		"recording FILE      call-id=" STR_FORMAT_M
+		"  status=CREATED      type=proc-meta  path=%s"
+		"  kernel_call_idx=%u  metadata=%s  path_override=%s  pattern=%s"
+		"  | Proc metadata ready; recording-daemon will open streams under /proc",
+		STR_FMT_M(&call->callid),
+		recording->proc.meta_filepath,
+		recording->proc.call_idx,
+		call->metadata.len ? call->metadata.s : "(none)",
+		call->recording_path.len ? call->recording_path.s : "(default)",
+		call->recording_pattern.len ? call->recording_pattern.s : "(default)");
 
 	append_meta_chunk_str(recording, &call->callid, "CALL-ID");
 	append_meta_chunk_s(recording, call->recording_meta_prefix.s, "PARENT");
@@ -924,8 +1173,19 @@ static void finish_proc(call_t *call, bool discard) {
 
 	int ret = unlink(unlink_fn);
 	if (ret)
-		ilog(LOG_ERR, "Failed to delete metadata file \"%s\": %s",
-				unlink_fn, strerror(errno));
+		ilog(LOG_ERR,
+			"recording FILE      call-id=" STR_FORMAT_M
+			"  status=NOT_REMOVED  type=proc-meta  path=%s  discard=%d  err=%s"
+			"  | FAILED to remove proc metadata file",
+			STR_FMT_M(&call->callid),
+			unlink_fn, discard ? 1 : 0, strerror(errno));
+	else
+		ilog(LOG_NOTICE,
+			"recording FILE      call-id=" STR_FORMAT_M
+			"  status=REMOVED      type=proc-meta  path=%s  discard=%d"
+			"  | Proc metadata removed; recording-daemon signaled",
+			STR_FMT_M(&call->callid),
+			unlink_fn, discard ? 1 : 0);
 
 	g_clear_pointer(&recording->proc.meta_filepath, free);
 }
@@ -962,10 +1222,23 @@ static void setup_stream_proc(struct packet_stream *stream) {
 			stream->unique_id);
 	stream->recording.proc.stream_idx = kernel_add_intercept_stream(recording->proc.call_idx, buf);
 	if (stream->recording.proc.stream_idx == UNINIT_IDX) {
-		ilog(LOG_ERR, "Failed to add stream to kernel recording interface: %s", strerror(errno));
+		ilog(LOG_ERR,
+			"recording STREAM    call-id=" STR_FORMAT_M
+			"  status=NOT_OPENED   stream=%s  stream_id=%u  err=%s"
+			"  | FAILED to add stream to kernel recording interface",
+			STR_FMT_M(&call->callid), buf, stream->unique_id, strerror(errno));
 		return;
 	}
-	ilog(LOG_DEBUG, "kernel stream idx is %u", stream->recording.proc.stream_idx);
+	ilog(LOG_NOTICE,
+		"recording STREAM    call-id=" STR_FORMAT_M
+		"  status=OPENED       stream=%s  stream_id=%u"
+		"  kernel_stream_idx=%u  kernel_call_idx=%u"
+		"  tag=%u  media=%u  component=%u"
+		"  | Stream registered for kernel intercept /proc recording",
+		STR_FMT_M(&call->callid),
+		buf, stream->unique_id,
+		stream->recording.proc.stream_idx, recording->proc.call_idx,
+		ml->unique_id, media->unique_id, stream->component);
 	append_meta_chunk(recording, buf, len, "STREAM %u interface", stream->unique_id);
 }
 

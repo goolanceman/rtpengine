@@ -28,6 +28,14 @@
 void stream_close(stream_t *stream) {
 	if (stream->fd == -1)
 		return;
+	ilog(LOG_NOTICE,
+			"recording STREAM    call-id=%s%s%s"
+			"  status=CLOSED       stream=%s"
+			"  | Kernel intercept stream closed",
+			FMT_M(stream->metafile && stream->metafile->call_id
+				? stream->metafile->call_id
+				: (stream->metafile && stream->metafile->name ? stream->metafile->name : "(unknown)")),
+			stream->name ? stream->name : "(unnamed)");
 	epoll_del(stream->fd);
 	close(stream->fd);
 	stream->fd = -1;
@@ -56,14 +64,29 @@ static void stream_handler(handler_t *handler) {
 		buf = malloc(ALLOCLEN);
 		int ret = read(stream->fd, buf, MAXBUFLEN);
 		if (ret == 0) {
-			ilog(LOG_INFO, "EOF on stream %s", stream->name);
+			ilog(LOG_NOTICE,
+				"recording STREAM    call-id=%s%s%s"
+				"  status=EOF          stream=%s"
+				"  | End of stream (no more media from kernel)",
+				FMT_M(stream->metafile && stream->metafile->call_id
+					? stream->metafile->call_id
+					: (stream->metafile && stream->metafile->name ? stream->metafile->name : "(unknown)")),
+				stream->name ? stream->name : "(unnamed)");
 			stream_close(stream);
 			break;
 		}
 		else if (ret < 0) {
 			if (errno == EAGAIN || errno == EINTR || errno == EWOULDBLOCK)
 				break;
-			ilog(LOG_INFO, "Read error on stream %s: %s", stream->name, strerror(errno));
+			ilog(LOG_NOTICE,
+				"recording STREAM    call-id=%s%s%s"
+				"  status=READ_ERROR   stream=%s  err=%s"
+				"  | Stream read error; closing",
+				FMT_M(stream->metafile && stream->metafile->call_id
+					? stream->metafile->call_id
+					: (stream->metafile && stream->metafile->name ? stream->metafile->name : "(unknown)")),
+				stream->name ? stream->name : "(unnamed)",
+				strerror(errno));
 			stream_close(stream);
 			break;
 		}
@@ -128,9 +151,21 @@ void stream_open(metafile_t *mf, unsigned long id, char *name) {
 
 	stream->fd = open(fnbuf, O_RDONLY | O_NONBLOCK);
 	if (stream->fd == -1) {
-		ilog(LOG_ERR, "Failed to open kernel stream %s: %s", fnbuf, strerror(errno));
+		ilog(LOG_ERR,
+			"recording STREAM    call-id=%s%s%s"
+			"  status=NOT_OPENED   stream=%s  path=%s  err=%s"
+			"  | FAILED to open kernel intercept stream",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			name, fnbuf, strerror(errno));
 		return;
 	}
+
+	ilog(LOG_NOTICE,
+		"recording STREAM    call-id=%s%s%s"
+		"  status=OPENED       stream=%s  path=%s"
+		"  | Kernel intercept stream opened for reading",
+		FMT_M(mf->call_id ? mf->call_id : mf->name),
+		name, fnbuf);
 
 	// add to epoll
 	stream->handler.ptr = stream;

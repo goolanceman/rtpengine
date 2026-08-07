@@ -342,7 +342,14 @@ got_fn:
 		goto err;
 
 	db_config_stream(output);
-	ilog(LOG_INFO, "Opened output media file '%s' for writing", full_fn);
+	ilog(LOG_NOTICE,
+			"recording FILE      status=CREATED      type=%s  path=%s  format=%s"
+			"  kind=%s"
+			"  | Audio output file opened for writing",
+			output->file_format ? output->file_format : "(unknown)",
+			full_fn,
+			output->file_format ? output->file_format : "(unknown)",
+			output->kind ? output->kind : "(unknown)");
 done:
 	if (actual_format)
 		*actual_format = output->actual_format;
@@ -350,7 +357,12 @@ done:
 
 err:
 	output_shutdown(output);
-	ilog(LOG_ERR, "Error configuring media output: %s", err);
+	ilog(LOG_ERR,
+					"recording FILE      status=NOT_CREATED  type=%s  path=%s  err=%s"
+					"  | FAILED to configure/open audio output file",
+					output && output->file_format ? output->file_format : "(unknown)",
+					output && output->filename ? output->filename : "(none)",
+					err);
 	if (av_ret)
 		ilog(LOG_ERR, "Error returned from libav: %s", av_error(av_ret));
 	return -1;
@@ -363,7 +375,7 @@ static bool output_shutdown(output_t *output) {
 	if (!output->fmtctx)
 		return false;
 
-	ilog(LOG_INFO, "Closing output media file '%s'", output->filename);
+	/* quiet intermediate close-begin; final SAVED/EMPTY/DISCARDED line is the operator summary */
 
 	bool ret = false;
 	if (output->fmtctx->pb) {
@@ -398,19 +410,42 @@ static bool output_shutdown(output_t *output) {
 void output_close(metafile_t *mf, output_t *output, tag_t *tag, bool discard) {
 	if (!output)
 		return;
+	const char *cid = (mf && mf->call_id) ? mf->call_id : (mf && mf->name ? mf->name : "(unknown)");
+	const char *path = output->filename ? output->filename : "(none)";
+	const char *kind = output->kind ? output->kind : "(unknown)";
+	const char *fmt = output->file_format ? output->file_format : "(unknown)";
 	if (!discard) {
 		if (output_shutdown(output)) {
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=%s%s%s"
+				"  status=SAVED         type=%s  path=%s"
+				"  format=%s  kind=%s"
+				"  | Audio file SAVED on disk",
+				FMT_M(cid), fmt, path, fmt, kind);
 			db_close_stream(output);
 			notify_push_output(output, mf, tag);
 		}
-		else
+		else {
+			ilog(LOG_NOTICE,
+				"recording FILE      call-id=%s%s%s"
+				"  status=NOT_CREATED   type=%s  path=%s"
+				"  format=%s  kind=%s"
+				"  | Audio file EMPTY / NOT SAVED (no media written)",
+				FMT_M(cid), fmt, path, fmt, kind);
 			db_delete_stream(mf, output);
+		}
 	}
 	else {
 		output_shutdown(output);
 		if (output->filename && unlink(output->filename))
 			ilog(LOG_WARN, "Failed to unlink '%s%s%s': %s",
 					FMT_M(output->filename), strerror(errno));
+		else
+			ilog(LOG_NOTICE,
+			"recording FILE      call-id=%s%s%s"
+			"  status=DISCARDED     type=%s  path=%s"
+			"  | Audio file discarded (unlinked)",
+			FMT_M(cid), fmt, path);
 		db_delete_stream(mf, output);
 	}
 	encoder_free(output->encoder);
