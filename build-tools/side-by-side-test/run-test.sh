@@ -96,7 +96,8 @@ cmd_status() {
   systemctl is-active "$TEST_D" 2>/dev/null || echo inactive
   systemctl is-active "$TEST_R" 2>/dev/null || echo inactive
   ls -la /proc/rtpengine/ 2>/dev/null || true
-  ss -tulnp 2>/dev/null | grep -E '23222|18080|19900|13222' || true
+  ss -tulnp 2>/dev/null | grep -E '23222|18080|19900|13222|22222|8080|12222|9900' || true
+  echo "test RTP ports: 61000-62998 (prod uses 40000-60000)"
   assert_prod
 }
 

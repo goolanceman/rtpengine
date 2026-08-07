@@ -6,15 +6,18 @@ ports, spool, and kernel table. Production rtpengine services are
 
 ## Isolation
 
-| | Production | Test |
+| | Production (siprec) | Test |
 |--|--|--|
 | Units | rtpengine, rtpengine-recording | rtpengine-test, rtpengine-recording-test |
-| Binaries | system path | debian-bins/bins/* |
+| Binaries | /usr/bin/* | package bins/ or BIN_DIR |
 | NG | 22222 | 127.0.0.1:23222 |
 | HTTP | 8080 | 127.0.0.1:18080 |
-| CLI | 9900 | 127.0.0.1:19900 |
-| RTP ports | 16384-32768 | 40000-42000 |
-| Kernel table | 42/43 | 44 (add only) |
+| UDP ctrl | 12222 | 127.0.0.1:13222 |
+| CLI | 127.0.0.1:9900 | 127.0.0.1:19900 |
+| DTMF log | 127.0.0.1:22223 | (not used) |
+| RTP ports | 40000-60000 | 61000-62998 (no overlap) |
+| Kernel table | 42 | 44 (add only; never del 42) |
+| PID file | /run/rtpengine.pid | /run/rtpengine-test-12.5.pid |
 | Spool | /var/spool/recording | /var/spool/recording-test-12.5 |
 | Output | prod config | /tmp/recordings-test-12.5 |
 

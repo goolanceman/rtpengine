@@ -37,8 +37,8 @@ exec "${BIN}/rtpengine" \
   --listen-cli=127.0.0.1:19900 \
   --table="${TABLE}" \
   --pidfile /run/rtpengine-test-12.5.pid \
-  --port-min 40000 \
-  --port-max 42000 \
+  --port-min 61000 \
+  --port-max 62998 \
   --recording-dir /var/spool/recording-test-12.5 \
   --recording-method proc \
   --log-level 5 \
