@@ -172,11 +172,42 @@ cmd_smoke() {
 
 cmd_uninstall() {
   need_root uninstall-units
+  echo "==> stop test units (prod untouched)"
   systemctl stop "$TEST_D" "$TEST_R" 2>/dev/null || true
-  systemctl disable "$TEST_D" "$TEST_R" 2>/dev/null || true
+  systemctl disable --now "$TEST_D" "$TEST_R" 2>/dev/null || true
+  systemctl reset-failed "$TEST_D" "$TEST_R" 2>/dev/null || true
+  # kill leftover test PIDs if any (never pkill -x rtpengine — that would hit prod)
+  pkill -f '/rtpengine-test-12.5.pid' 2>/dev/null || true
+  pkill -f 'listen-ng=127.0.0.1:23222' 2>/dev/null || true
+  pkill -f 'rtpengine-recording-test.ini' 2>/dev/null || true
+  sleep 1
+  echo "==> remove unit files"
   rm -f "${UNIT_DIR}/${TEST_D}" "${UNIT_DIR}/${TEST_R}"
+  rm -f "${UNIT_DIR}/${TEST_D}.d"/* 2>/dev/null || true
+  rmdir "${UNIT_DIR}/${TEST_D}.d" 2>/dev/null || true
+  rm -f "${UNIT_DIR}/${TEST_R}.d"/* 2>/dev/null || true
+  rmdir "${UNIT_DIR}/${TEST_R}.d" 2>/dev/null || true
+  # drop per-install bin pointer (optional local state)
+  rm -f "${ROOT}/.bin-dir"
   systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+  echo "==> verify unit files gone"
+  if [[ -e "${UNIT_DIR}/${TEST_D}" || -e "${UNIT_DIR}/${TEST_R}" ]]; then
+    die "unit files still present under ${UNIT_DIR}"
+  fi
+  if systemctl cat "$TEST_D" >/dev/null 2>&1 || systemctl cat "$TEST_R" >/dev/null 2>&1; then
+    echo "WARN: systemd still loads a unit definition; daemon-reload again" >&2
+    systemctl daemon-reload
+  fi
+  # is-active on missing units often prints inactive — show list-unit-files instead
+  echo "remaining test unit-files (should be empty):"
+  systemctl list-unit-files 'rtpengine-test*' 'rtpengine-recording-test*' --no-pager 2>/dev/null || true
+  ls /etc/systemd/system/rtpengine-test* /etc/systemd/system/rtpengine-recording-test* 2>/dev/null && \
+    die "test unit paths still on disk" || echo "(none on disk — OK)"
+  # do not delete table 44 from kernel by default (harmless); optional:
+  # echo "del ${TABLE}" > /proc/rtpengine/control 2>/dev/null || true
   echo "Removed test units only."; assert_prod
+  systemctl is-active "$PROD_D" "$PROD_R"
 }
 
 case "${1:-help}" in
