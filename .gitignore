@@ -9,3 +9,5 @@ rhel-binaries/
 build-out/
 build-tools/logs/
 rhel/
+debian/bins/
+debian-bins/
