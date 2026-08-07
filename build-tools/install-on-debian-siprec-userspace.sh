@@ -2,17 +2,38 @@
 # Install 12.5.1.31 rich-log USERSPACE only. Keeps existing 12.5 kernel module.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-BIN_DIR="${ROOT}/bins"
+REPO="$(cd "${ROOT}/.." && pwd)"
+
+# Bins resolution (first match wins):
+#   1) BIN_DIR=... env
+#   2) $ROOT/bins          (debian-bins package layout if script is copied there)
+#   3) release-bins/.../debian  (git checkout on siprec)
+#   4) $REPO/debian-bins/bins
+if [[ -n "${BIN_DIR:-}" ]]; then
+  BIN_DIR="$(cd "${BIN_DIR}" && pwd)"
+elif [[ -x "${ROOT}/bins/rtpengine" ]]; then
+  BIN_DIR="${ROOT}/bins"
+elif [[ -x "${REPO}/release-bins/12.5.1.31-rich-logs/debian/rtpengine" ]]; then
+  BIN_DIR="${REPO}/release-bins/12.5.1.31-rich-logs/debian"
+elif [[ -x "${REPO}/debian-bins/bins/rtpengine" ]]; then
+  BIN_DIR="${REPO}/debian-bins/bins"
+else
+  echo "ERROR: no binaries found. Set BIN_DIR= to debian rtpengine dir." >&2
+  echo "  e.g. BIN_DIR=\$PWD/release-bins/12.5.1.31-rich-logs/debian sudo -E $0" >&2
+  exit 1
+fi
 
 if [[ $(id -u) -ne 0 ]]; then
   echo "Run as root: sudo $0" >&2
   exit 1
 fi
 
-echo "==> package: $ROOT"
-echo "==> version: $(cat "$ROOT/VERSION" 2>/dev/null || echo unknown) sha=$(cat "$ROOT/GIT_SHA" 2>/dev/null || echo unknown)"
+echo "==> script: $ROOT"
+echo "==> bins:   $BIN_DIR"
+echo "==> version: $(cat "${BIN_DIR}/../VERSION" 2>/dev/null || cat "$ROOT/VERSION" 2>/dev/null || echo unknown) sha=$(cat "${BIN_DIR}/../GIT_SHA" 2>/dev/null || cat "$ROOT/GIT_SHA" 2>/dev/null || echo unknown)"
 echo "==> host kernel: $(uname -r)"
 echo "==> USERSPACE ONLY — kernel module not touched"
+echo "==> THIS STOPS AND REPLACES PRODUCTION rtpengine + rtpengine-recording"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
 need systemctl
