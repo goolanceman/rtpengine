@@ -66,7 +66,8 @@ collect_bin_paths() {
     # ExecStart={ path=/usr/bin/foo ; ...
     if [[ "$exe" =~ path=([^ ;]+) ]]; then
       p="${BASH_REMATCH[1]}"
-      [[ "$(basename "$p")" == "$name" || "$p" == *"$name"* ]] && [[ -e "$p" ]] && out+=("$p")
+      # exact basename only (avoid rtpengine matching rtpengine-recording)
+      [[ "$(basename "$p")" == "$name" && -e "$p" ]] && out+=("$p")
     fi
     # plain ExecStart=/path/foo ...
     for p in $exe; do
