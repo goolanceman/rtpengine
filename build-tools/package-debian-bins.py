@@ -72,12 +72,34 @@ def main() -> None:
         p = bins / b
         p.chmod(0o755)
 
+    # Prefer maintained userspace-only installer (backup-first); fall back to embedded INSTALL_SH.
+    userspace_src = ROOT / "build-tools" / "install-on-debian-siprec-userspace.sh"
     install = OUT / "install-on-debian-siprec.sh"
-    install.write_text(INSTALL_SH)
+    if userspace_src.is_file():
+        shutil.copy2(userspace_src, install)
+    else:
+        install.write_text(INSTALL_SH)
     install.chmod(0o755)
+
+    # Side-by-side test harness (prod-safe). Bins path stays ../bins relative to it.
+    sbs_src = ROOT / "build-tools" / "side-by-side-test"
+    sbs_dst = OUT / "side-by-side-test"
+    if sbs_src.is_dir():
+        if sbs_dst.exists():
+            shutil.rmtree(sbs_dst)
+        shutil.copytree(
+            sbs_src,
+            sbs_dst,
+            ignore=shutil.ignore_patterns(".bin-dir", "__pycache__", "*.pyc"),
+        )
+        for name in ("run-test.sh", "start-daemon.sh", "start-recording.sh", "smoke-ng.py"):
+            p = sbs_dst / name
+            if p.exists():
+                p.chmod(0o755)
 
     readme = README_MD.format(SHA=SHA)
     (OUT / "README.md").write_text(readme)
+    (OUT / "GIT_SHA").write_text(SHA + "\n")
 
     print("Package ready:", OUT)
     for p in sorted(OUT.rglob("*")):
@@ -86,7 +108,8 @@ def main() -> None:
 
 
 INSTALL_SH = r'''#!/bin/bash
-# Install matching userspace + kernel module onto Debian 13 siprec. Run as root.
+# Install matching userspace (+ optional kmod) onto Debian siprec. Run as root.
+# ALWAYS backs up current bins/configs before stop/replace.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="${ROOT}/bins"
@@ -102,119 +125,90 @@ fi
 echo "==> package root: $ROOT"
 echo "==> host kernel:  $(uname -r)"
 echo "==> version:      $(cat "$ROOT/VERSION" 2>/dev/null || echo unknown)"
+echo "==> sha:          $(cat "$ROOT/GIT_SHA" 2>/dev/null || echo unknown)"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
 need systemctl
 need modprobe
+need install
+
+TS=$(date +%Y%m%d%H%M%S)
+BAK_DIR="/var/backups/rtpengine-rich-logs/${TS}"
+mkdir -p "${BAK_DIR}"
+DAEMON_PATH="$(command -v rtpengine || true)"; [[ -n "$DAEMON_PATH" ]] || DAEMON_PATH=/usr/bin/rtpengine
+REC_PATH="$(command -v rtpengine-recording || true)"; [[ -n "$REC_PATH" ]] || REC_PATH=/usr/bin/rtpengine-recording
+[[ -x /usr/sbin/rtpengine-recording ]] && REC_PATH=/usr/sbin/rtpengine-recording
+
+echo "==> backup existing bins BEFORE stop (mandatory) -> ${BAK_DIR}"
+backup_one() {
+  local src="$1" name="$2"
+  if [[ -e "$src" ]]; then
+    cp -a "$src" "${BAK_DIR}/${name}"
+    cp -a "$src" "${src}.bak.${TS}"
+    ls -la "${BAK_DIR}/${name}" "${src}.bak.${TS}"
+  else
+    echo "NOTE: no existing $name at $src"
+  fi
+}
+backup_one "$DAEMON_PATH" rtpengine
+backup_one "$REC_PATH" rtpengine-recording
+for f in /etc/systemd/system/rtpengine.service \
+         /etc/systemd/system/rtpengine-recording.service \
+         /lib/systemd/system/rtpengine.service \
+         /lib/systemd/system/rtpengine-recording.service \
+         /usr/local/libexec/rtpengine-start.sh \
+         /etc/rtpengine.conf \
+         /etc/rtpengine-recording.ini; do
+  [[ -e "$f" ]] && cp -a "$f" "${BAK_DIR}/$(basename "$f")" || true
+done
+echo "${DAEMON_PATH}" > "${BAK_DIR}/DAEMON_PATH.txt"
+echo "${REC_PATH}" > "${BAK_DIR}/REC_PATH.txt"
+ls -la "${BAK_DIR}"
 
 systemctl stop rtpengine rtpengine-recording 2>/dev/null || true
 sleep 1
 pkill -x rtpengine 2>/dev/null || true
 pkill -x rtpengine-recording 2>/dev/null || true
 
-install -m 755 "$BIN_DIR/rtpengine" /usr/bin/rtpengine
-install -m 755 "$BIN_DIR/rtpengine-recording" /usr/bin/rtpengine-recording
+install -m 755 "$BIN_DIR/rtpengine" "$DAEMON_PATH"
+install -m 755 "$BIN_DIR/rtpengine-recording" "$REC_PATH"
 echo "==> installed userspace:"
-file /usr/bin/rtpengine /usr/bin/rtpengine-recording
-grep -ao 'recording DETECT' /usr/bin/rtpengine | head -1 || echo "WARN: new log strings missing" >&2
+file "$DAEMON_PATH" "$REC_PATH"
+grep -ao 'recording DETECT' "$DAEMON_PATH" | head -1 || echo "WARN: new log strings missing" >&2
+echo "Rollback: cp -a ${DAEMON_PATH}.bak.${TS} ${DAEMON_PATH}; cp -a ${REC_PATH}.bak.${TS} ${REC_PATH}"
+echo "Full backup dir: ${BAK_DIR}"
 
 KREL=$(uname -r)
 echo "del ${TABLE}" > /proc/rtpengine/control 2>/dev/null || true
 modprobe -r xt_RTPENGINE 2>/dev/null || true
 modprobe -r nft_rtpengine 2>/dev/null || true
-command -v dkms >/dev/null 2>&1 && dkms status 2>/dev/null | grep -i rtpengine || true
 
+MODULE_LOADED=0
 install_ko() {
-  local ko="$1"
-  local base name
-  base=$(basename "$ko")
-  # Prefer module basename from package (xt_RTPENGINE.ko on 12.5, nft_rtpengine.ko on 26.x)
-  name=${base%.ko}
+  local ko="$1" base name
+  base=$(basename "$ko"); name=${base%.ko}
   echo "==> installing prebuilt module: $ko as ${name}"
   mkdir -p "/lib/modules/${KREL}/updates"
   install -m 644 "$ko" "/lib/modules/${KREL}/updates/${base}"
   depmod -a "${KREL}"
   modprobe "${name}"
 }
-
-MODULE_LOADED=0
-# Prefer exact host kernel prebuilt, either naming
-for cand in   "${KMOD_DIR}/${KREL}/xt_RTPENGINE.ko"   "${KMOD_DIR}/${KREL}/nft_rtpengine.ko"; do
-  if [[ -f "$cand" ]]; then
-    install_ko "$cand" && MODULE_LOADED=1 && break || true
-  fi
+for cand in "${KMOD_DIR}/${KREL}/xt_RTPENGINE.ko" "${KMOD_DIR}/${KREL}/nft_rtpengine.ko"; do
+  [[ -f "$cand" ]] && install_ko "$cand" && MODULE_LOADED=1 && break || true
 done
 if [[ "$MODULE_LOADED" -eq 0 ]]; then
   KO=$(find "${KMOD_DIR}" \( -name 'xt_RTPENGINE.ko' -o -name 'nft_rtpengine.ko' \) 2>/dev/null | head -1 || true)
-  if [[ -n "${KO:-}" ]]; then
-    echo "==> no exact match for ${KREL}; trying $KO"
-    install_ko "$KO" && MODULE_LOADED=1 || echo "prebuilt .ko load failed; will try DKMS"
-  fi
+  [[ -n "${KO:-}" ]] && install_ko "$KO" && MODULE_LOADED=1 || true
 fi
-
 if [[ "$MODULE_LOADED" -eq 0 ]]; then
-  echo "==> DKMS build for ${KREL}"
-  need dkms
-  if [[ ! -d "/lib/modules/${KREL}/build" ]]; then
-    apt-get update -qq
-    apt-get install -y "linux-headers-${KREL}" dkms build-essential || \
-      apt-get install -y linux-headers-amd64 dkms build-essential
-  fi
-  SRC_DIR=$(find "${DKMS_DIR}" -maxdepth 1 -type d -name 'ngcp-rtpengine-*' | head -1)
-  [[ -n "$SRC_DIR" ]] || { echo "no DKMS src under ${DKMS_DIR}" >&2; exit 1; }
-  PKG=$(basename "$SRC_DIR")
-  VER=${PKG#ngcp-rtpengine-}
-  rm -rf "/usr/src/${PKG}"
-  mkdir -p "/usr/src/${PKG}"
-  cp -a "${SRC_DIR}/." "/usr/src/${PKG}/"
-  if [[ ! -f "/usr/src/${PKG}/dkms.conf" ]]; then
-    cat > "/usr/src/${PKG}/dkms.conf" <<DKMS
-PACKAGE_NAME="ngcp-rtpengine"
-PACKAGE_VERSION="${VER}"
-BUILD_EXCLUSIVE_KERNEL_MIN="4.4"
-MAKE[0]="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build RTPENGINE_VERSION=\\\"\${PACKAGE_VERSION}\\\""
-CLEAN="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build clean"
-AUTOINSTALL=yes
-BUILT_MODULE_NAME[0]="xt_RTPENGINE"
-DEST_MODULE_LOCATION[0]=/extra
-DKMS
-  fi
-  dkms remove "ngcp-rtpengine/${VER}" --all 2>/dev/null || true
-  dkms remove rtpengine/12.5.1.31 --all 2>/dev/null || true
-  dkms remove ngcp-rtpengine/12.5.1.31 --all 2>/dev/null || true
-  dkms add -m ngcp-rtpengine -v "${VER}"
-  dkms build -m ngcp-rtpengine -v "${VER}" -k "${KREL}"
-  dkms install -m ngcp-rtpengine -v "${VER}" -k "${KREL}"
-  modprobe nft_rtpengine
+  echo "==> keeping/loading existing host module (no matching kmod in package)"
+  modprobe xt_RTPENGINE 2>/dev/null || modprobe nft_rtpengine 2>/dev/null || true
 fi
-
 lsmod | grep -i rtp || { echo "module still not loaded" >&2; exit 1; }
 ls -la /proc/rtpengine/control || { echo "/proc/rtpengine/control missing" >&2; exit 1; }
 
-mkdir -p /etc/systemd/system/rtpengine.service.d
-cat > /etc/systemd/system/rtpengine.service.d/10-xtables-match.conf <<UNIT
-[Service]
-Type=simple
-PIDFile=
-ExecStart=
-ExecStart=/bin/bash -c '\\
-  LOCAL_IP=\$(curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/local-ipv4 || hostname -I | awk "{print \\\$1}"); \\
-  echo "del ${TABLE}" > /proc/rtpengine/control 2>/dev/null || true; \\
-  exec /usr/bin/rtpengine \\
-    --interface private/\${LOCAL_IP} \\
-    --interface public/\${LOCAL_IP} \\
-    --listen-ng=22222 --listen-http=8080 --listen-udp=12222 \\
-    --dtmf-log-dest=127.0.0.1:22223 --listen-cli=127.0.0.1:9900 \\
-    --table=${TABLE} --xtables \\
-    --pidfile /run/rtpengine.pid \\
-    --port-min 40000 --port-max 60000 \\
-    --recording-dir /var/spool/recording \\
-    --recording-method proc \\
-    --log-level 5 --delete-delay 0 --foreground'
-UNIT
-
 if [[ -f /etc/rtpengine-recording.ini ]]; then
-  cp -a /etc/rtpengine-recording.ini "/etc/rtpengine-recording.ini.bak.$(date +%s)"
+  cp -a /etc/rtpengine-recording.ini "/etc/rtpengine-recording.ini.bak.${TS}"
   if grep -qE '^[[:space:]]*table[[:space:]]*=' /etc/rtpengine-recording.ini; then
     sed -i -E "s/^[[:space:]]*table[[:space:]]*=.*/table = ${TABLE}/" /etc/rtpengine-recording.ini
   else
@@ -227,48 +221,55 @@ systemctl restart rtpengine-recording
 sleep 1
 systemctl restart rtpengine
 sleep 2
-
 echo "==> status"
 systemctl is-active rtpengine rtpengine-recording
-ps -o args= -C rtpengine | head -1
-ls -la /proc/rtpengine/${TABLE}/control || ls -la /proc/rtpengine/*/control || true
-file /usr/bin/rtpengine
-journalctl -u rtpengine --since '30 sec ago' --no-pager | grep -iE 'FAILED|KERNEL|version|OPEN' || echo '(no kernel errors)'
-echo "DONE. Expect after a call: recording DETECT / START kernel_open=1 / FILE status=CREATED"
+ls -la /proc/rtpengine/ || true
+file "$DAEMON_PATH"
+echo "DONE. Prefer side-by-side-test before this installer on prod."
 '''
 
-README_MD = """# Debian 13 (trixie) matching userspace + kernel module
+README_MD = """# Debian 12.5.1.31 rich recording logs package
 
-Built from branch rich-recording-debug-logs commit {SHA}.
+Built from branch rich-recording-logs-12.5.1.31 commit {SHA}.
 
 | Path | Content |
 |------|---------|
-| bins/rtpengine | userspace daemon (human-friendly LOG_NOTICE) |
+| bins/rtpengine | userspace daemon (rich LOG_NOTICE lifecycle logs) |
 | bins/rtpengine-recording | recording-daemon |
-| kmod/KVER/nft_rtpengine.ko | prebuilt module for Debian headers used at build |
-| dkms-src/ | DKMS sources for host uname -r |
-| install-on-debian-siprec.sh | one-shot installer |
+| side-by-side-test/ | prod-safe test units (alt ports/table/spool) |
+| install-on-debian-siprec.sh | promote installer (ALWAYS backs up first) |
+| kmod/ / dkms-src/ | optional matching module artifacts |
 
-## Why
+## Recommended: side-by-side first (does NOT touch production)
 
-Host packages were 12.5.1.31-1. Replacing only userspace with 26.x bins breaks
-proc table open. This package ships matching userspace + kernel module.
+    cd debian-bins/side-by-side-test
+    sudo bash run-test.sh install-units
+    sudo bash run-test.sh start
+    sudo bash run-test.sh status
+    sudo bash run-test.sh smoke
+    sudo bash run-test.sh stop
+    sudo bash run-test.sh uninstall-units
 
-## Install on siprec
+Test uses NG 127.0.0.1:23222, table 44, spool /var/spool/recording-test-12.5.
+Production NG/ports/units stay running.
 
-scp -r debian-bins movius@euprod2-frankfurt-siprec-01:~/
-cd ~/debian-bins && sudo ./install-on-debian-siprec.sh
+On RHEL lab (not Debian glibc), point BIN_DIR at RHEL-built bins:
 
-If prebuilt .ko vermagic mismatches host kernel, installer falls back to DKMS
-(needs linux-headers for uname -r).
+    BIN_DIR=/path/to/rhel-binaries-12.5.1.31 sudo -E bash run-test.sh install-units
+
+## Promote (after smoke OK)
+
+    cd debian-bins
+    sudo bash install-on-debian-siprec.sh
+
+Installer ALWAYS backs up current bins + unit/config files to
+/var/backups/rtpengine-rich-logs/<timestamp>/ before stop/replace.
 
 ## Verify
 
-file /usr/bin/rtpengine
-lsmod | grep nft_rtpengine
-ls -la /proc/rtpengine/42/control
-ps -o args= -C rtpengine | grep xtables
-sudo journalctl -u rtpengine -n 50 | grep -E 'recording DETECT|FAILED TO OPEN'
+    file /usr/bin/rtpengine
+    lsmod | grep -i rtp
+    sudo journalctl -u rtpengine -u rtpengine-recording -f | grep recording
 """
 
 
