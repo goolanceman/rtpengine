@@ -46,23 +46,86 @@ Examples:
 EOF
 }
 
+# Collect every plausible install path for a binary name (PATH + systemd ExecStart + common dirs)
+collect_bin_paths() {
+  local name="$1"
+  local -a out=()
+  local p u exe
+  # PATH hits
+  while read -r p; do
+    [[ -n "$p" && -e "$p" ]] && out+=("$p")
+  done < <(type -aP "$name" 2>/dev/null || true)
+  # common locations
+  for p in     "/usr/bin/$name" "/usr/sbin/$name" "/bin/$name" "/sbin/$name"     "/usr/local/bin/$name" "/usr/local/sbin/$name"
+  do
+    [[ -e "$p" ]] && out+=("$p")
+  done
+  # systemd unit ExecStart (running or installed)
+  for u in rtpengine.service rtpengine-recording.service            ngcp-rtpengine-daemon.service ngcp-rtpengine-recording-daemon.service; do
+    exe=$(systemctl show -p ExecStart --value "$u" 2>/dev/null || true)
+    # ExecStart={ path=/usr/bin/foo ; ...
+    if [[ "$exe" =~ path=([^ ;]+) ]]; then
+      p="${BASH_REMATCH[1]}"
+      [[ "$(basename "$p")" == "$name" || "$p" == *"$name"* ]] && [[ -e "$p" ]] && out+=("$p")
+    fi
+    # plain ExecStart=/path/foo ...
+    for p in $exe; do
+      case "$p" in
+        /*)
+          bn=$(basename "$p")
+          [[ "$bn" == "$name" && -e "$p" ]] && out+=("$p")
+          ;;
+      esac
+    done
+  done
+  # running process
+  if pgrep -x "$name" >/dev/null 2>&1; then
+    p=$(tr '\0' ' ' <"/proc/$(pgrep -x "$name" | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
+    [[ -n "${p:-}" && -e "$p" ]] && out+=("$p")
+  fi
+  # unique preserve order
+  printf '%s\n' "${out[@]}" | awk 'NF && !seen[$0]++'
+}
+
 resolve_prod_paths() {
-  DAEMON_PATH="$(command -v rtpengine || true)"
-  REC_PATH="$(command -v rtpengine-recording || true)"
-  [[ -n "$DAEMON_PATH" ]] || DAEMON_PATH=/usr/bin/rtpengine
-  [[ -n "$REC_PATH" ]] || REC_PATH=/usr/bin/rtpengine-recording
-  [[ -x /usr/sbin/rtpengine-recording ]] && REC_PATH=/usr/sbin/rtpengine-recording
-  # prefer path used by running service if present
+  DAEMON_PATHS=()
+  REC_PATHS=()
+  mapfile -t DAEMON_PATHS < <(collect_bin_paths rtpengine)
+  mapfile -t REC_PATHS < <(collect_bin_paths rtpengine-recording)
+  # primary path = running process preferred, else first found
+  DAEMON_PATH=""
+  REC_PATH=""
   if pgrep -x rtpengine >/dev/null 2>&1; then
-    local rp
-    rp=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
-    [[ -x "${rp:-}" ]] && DAEMON_PATH="$rp"
+    DAEMON_PATH=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
   fi
   if pgrep -x rtpengine-recording >/dev/null 2>&1; then
-    local rr
-    rr=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine-recording | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
-    [[ -x "${rr:-}" ]] && REC_PATH="$rr"
+    REC_PATH=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine-recording | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
   fi
+  [[ -n "$DAEMON_PATH" && -e "$DAEMON_PATH" ]] || DAEMON_PATH="${DAEMON_PATHS[0]:-/usr/bin/rtpengine}"
+  [[ -n "$REC_PATH" && -e "$REC_PATH" ]] || REC_PATH="${REC_PATHS[0]:-/usr/bin/rtpengine-recording}"
+  # ensure primary is in the lists
+  local p found
+  found=0; for p in "${DAEMON_PATHS[@]:-}"; do [[ "$p" == "$DAEMON_PATH" ]] && found=1; done
+  [[ $found -eq 0 && -n "$DAEMON_PATH" ]] && DAEMON_PATHS=("$DAEMON_PATH" "${DAEMON_PATHS[@]:-}")
+  found=0; for p in "${REC_PATHS[@]:-}"; do [[ "$p" == "$REC_PATH" ]] && found=1; done
+  [[ $found -eq 0 && -n "$REC_PATH" ]] && REC_PATHS=("$REC_PATH" "${REC_PATHS[@]:-}")
+  # de-dup again
+  mapfile -t DAEMON_PATHS < <(printf '%s\n' "${DAEMON_PATHS[@]:-}" | awk 'NF && !seen[$0]++')
+  mapfile -t REC_PATHS < <(printf '%s\n' "${REC_PATHS[@]:-}" | awk 'NF && !seen[$0]++')
+}
+
+verify_rich_marker() {
+  local path="$1" marker="$2" label="$3"
+  if [[ ! -e "$path" ]]; then
+    echo "WARN: $label missing at $path" >&2
+    return 1
+  fi
+  if grep -ao "$marker" "$path" >/dev/null 2>&1; then
+    echo "OK $label has $marker @ $path"
+    return 0
+  fi
+  echo "FAIL $label missing marker '$marker' @ $path" >&2
+  return 1
 }
 
 resolve_bin_dir() {
@@ -119,8 +182,25 @@ do_backup() {
       echo "NOTE: no existing $name at $src"
     fi
   }
-  backup_one "$DAEMON_PATH" rtpengine
-  backup_one "$REC_PATH" rtpengine-recording
+  # backup every discovered path (name includes basename-hash of path for multiples)
+  local p bn
+  i=0
+  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
+    bn="rtpengine"
+    [[ $i -gt 0 ]] && bn="rtpengine.$(echo "$p" | tr '/' '_')"
+    backup_one "$p" "$bn"
+    i=$((i+1))
+  done
+  i=0
+  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
+    bn="rtpengine-recording"
+    [[ $i -gt 0 ]] && bn="rtpengine-recording.$(echo "$p" | tr '/' '_')"
+    backup_one "$p" "$bn"
+    i=$((i+1))
+  done
+  # also keep primary names always
+  [[ -e "$DAEMON_PATH" ]] && cp -a "$DAEMON_PATH" "${BAK_DIR}/rtpengine" || true
+  [[ -e "$REC_PATH" ]] && cp -a "$REC_PATH" "${BAK_DIR}/rtpengine-recording" || true
   for f in \
     /etc/systemd/system/rtpengine.service \
     /etc/systemd/system/rtpengine-recording.service \
@@ -197,18 +277,26 @@ cmd_status() {
   echo "=== production services ==="
   systemctl is-active rtpengine 2>/dev/null || echo inactive
   systemctl is-active rtpengine-recording 2>/dev/null || echo inactive
-  echo "=== bin paths ==="
+  echo "=== bin paths (primary) ==="
   echo "daemon:    $DAEMON_PATH"
   echo "recording: $REC_PATH"
   ls -la "$DAEMON_PATH" "$REC_PATH" 2>/dev/null || true
-  echo "=== rich-log markers ==="
-  if [[ -x "$DAEMON_PATH" ]]; then
-    grep -ao 'recording DETECT' "$DAEMON_PATH" 2>/dev/null | head -1 && echo "(DETECT present)" || echo "DETECT: missing"
-    grep -ao 'recording START' "$DAEMON_PATH" 2>/dev/null | head -1 >/dev/null && echo "START: present" || echo "START: missing"
-  fi
-  if [[ -x "$REC_PATH" ]]; then
-    grep -ao 'status=SAVED' "$REC_PATH" 2>/dev/null | head -1 >/dev/null && echo "SAVED: present" || echo "SAVED: missing"
-  fi
+  echo "=== all discovered daemon paths ==="
+  printf '  %s\n' "${DAEMON_PATHS[@]:-}"
+  echo "=== all discovered recording paths ==="
+  printf '  %s\n' "${REC_PATHS[@]:-}"
+  echo "=== systemd ExecStart ==="
+  systemctl show -p ExecStart --value rtpengine 2>/dev/null | head -c 300; echo
+  systemctl show -p ExecStart --value rtpengine-recording 2>/dev/null | head -c 300; echo
+  echo "=== rich-log markers on primary + running paths ==="
+  local p
+  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
+    if grep -ao 'recording DETECT' "$p" >/dev/null 2>&1; then echo "OK DETECT @ $p"; else echo "MISSING DETECT @ $p"; fi
+  done
+  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
+    if grep -ao 'recording NEW' "$p" >/dev/null 2>&1; then echo "OK NEW @ $p"; else echo "MISSING NEW @ $p"; fi
+    if grep -ao 'status=SAVED' "$p" >/dev/null 2>&1; then echo "OK SAVED @ $p"; else echo "MISSING SAVED @ $p"; fi
+  done
   echo "=== kernel ==="
   lsmod | grep -iE 'rtp|RTP' || echo "(no rtp module)"
   ls -la /proc/rtpengine/ 2>/dev/null || true
@@ -263,12 +351,28 @@ cmd_promote() {
 
   stop_prod
 
-  echo "==> install userspace -> $DAEMON_PATH / $REC_PATH"
-  install -m 755 "${BIN_DIR}/rtpengine" "$DAEMON_PATH"
-  install -m 755 "${BIN_DIR}/rtpengine-recording" "$REC_PATH"
-  file "$DAEMON_PATH" "$REC_PATH"
-  grep -ao 'recording DETECT' "$DAEMON_PATH" | head -1 || echo "WARN: DETECT log string missing" >&2
-  grep -ao 'status=SAVED' "$REC_PATH" | head -1 || echo "WARN: SAVED log string missing" >&2
+  echo "==> install userspace to ALL discovered paths"
+  echo "    daemon paths:    ${DAEMON_PATHS[*]:-$DAEMON_PATH}"
+  echo "    recording paths: ${REC_PATHS[*]:-$REC_PATH}"
+  local p
+  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
+    echo "  install rtpengine -> $p"
+    install -m 755 "${BIN_DIR}/rtpengine" "$p"
+  done
+  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
+    echo "  install rtpengine-recording -> $p"
+    install -m 755 "${BIN_DIR}/rtpengine-recording" "$p"
+  done
+  file "$DAEMON_PATH" "$REC_PATH" 2>/dev/null || true
+  local ok=1
+  for p in "${DAEMON_PATHS[@]:-$DAEMON_PATH}"; do
+    verify_rich_marker "$p" 'recording DETECT' 'daemon' || ok=0
+  done
+  for p in "${REC_PATHS[@]:-$REC_PATH}"; do
+    verify_rich_marker "$p" 'recording NEW' 'recording' || ok=0
+    verify_rich_marker "$p" 'status=SAVED' 'recording' || ok=0
+  done
+  [[ $ok -eq 1 ]] || die "rich-log markers missing after install — wrong source bins?"
 
   echo "==> kernel module (unchanged — expect xt_RTPENGINE 12.5)"
   lsmod | grep -iE 'rtp|RTP' || echo "WARN: no rtp module loaded yet"
@@ -280,6 +384,17 @@ cmd_promote() {
 
   start_prod
   ls /proc/rtpengine/ || true
+
+  echo "==> verify RUNNING processes load rich-log bins"
+  sleep 1
+  local rp rr
+  rp=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
+  rr=$(tr '\0' ' ' <"/proc/$(pgrep -x rtpengine-recording | head -1)/cmdline" 2>/dev/null | awk '{print $1}')
+  echo "  running daemon:    ${rp:-none}"
+  echo "  running recording: ${rr:-none}"
+  [[ -n "${rp:-}" ]] && verify_rich_marker "$rp" 'recording DETECT' 'running-daemon'
+  [[ -n "${rr:-}" ]] && verify_rich_marker "$rr" 'recording NEW' 'running-recording'
+  [[ -n "${rr:-}" ]] && verify_rich_marker "$rr" 'status=SAVED' 'running-recording'
 
   echo
   echo "PROMOTE DONE. Watch logs:"
