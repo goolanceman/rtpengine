@@ -36,8 +36,13 @@ systemctl restart rtpengine-recording
 sleep 1
 systemctl is-active rtpengine-recording
 ps -o pid,args= -C rtpengine-recording
-R=$(tr '\0' ' ' < /proc/$(pgrep -x rtpengine-recording | head -1)/cmdline | awk '{print $1}')
-echo "running=$R"
+pid=$(systemctl show -p MainPID --value rtpengine-recording.service)
+R=$(readlink -f /proc/$pid/exe 2>/dev/null || true)
+R=${R% (deleted)}
+echo "running pid=$pid exe=$R"
 sha256sum "$R" "$SRC/rtpengine-recording"
+s1=$(sha256sum "$SRC/rtpengine-recording" | awk '{print $1}')
+s2=$(sha256sum "$R" | awk '{print $1}')
+[[ "$s1" == "$s2" ]] || { echo "FAIL hash mismatch running vs source" >&2; exit 1; }
 strings "$R" | grep -c 'recording NEW'
 echo "OK — watch: journalctl -u rtpengine-recording -f | grep recording"
