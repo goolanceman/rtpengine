@@ -22,8 +22,11 @@ RUN apt-get update \
   libhiredis-dev \
   libiptc-dev \
   libjson-glib-dev \
+  libmnl-dev \
+  libnftnl-dev \
+  libsystemd-dev \
   libjwt-dev \
-  libncursesw5-dev \
+  libncurses-dev \
   libopus-dev \
   libpcap-dev \
   libpcre2-dev \
@@ -38,11 +41,17 @@ WORKDIR /usr/src/rtpengine
 COPY . .
 
 FROM build AS rtpengine
+WORKDIR /usr/src/rtpengine
+RUN rm -f config.mk \
+  && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
 WORKDIR /usr/src/rtpengine/daemon
 RUN make -j$(nproc) rtpengine && \
   strip -o /usr/local/bin/rtpengine rtpengine
 
 FROM build AS rtpengine-recording
+WORKDIR /usr/src/rtpengine
+RUN rm -f config.mk \
+  && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
 WORKDIR /usr/src/rtpengine/recording-daemon
 RUN make -j$(nproc) rtpengine-recording && \
   strip -o /usr/local/bin/rtpengine-recording rtpengine-recording
