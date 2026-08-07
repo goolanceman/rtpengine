@@ -2,3 +2,11 @@
 *.strhash.c
 docs/_*
 config.mk
+
+# local build outputs
+/debian-bins/
+/rhel-binaries/
+/rhel-binaries-*/
+/rhel/
+/mac-binaries/
+config.mk

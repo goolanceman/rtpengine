@@ -1,0 +1,56 @@
+# Rocky Linux 8 userspace build (daemon + recording-daemon)
+ARG WITH_TRANSCODING=yes
+FROM rockylinux:8 AS build
+ARG WITH_TRANSCODING=yes
+ENV with_transcoding=${WITH_TRANSCODING}
+
+RUN dnf -y install dnf-plugins-core epel-release \
+  && dnf config-manager --set-enabled powertools \
+  && dnf -y install https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm \
+  && dnf -y install \
+    gcc gcc-c++ make pkgconfig git which file redhat-rpm-config \
+    glib2-devel libcurl-devel openssl-devel pcre2-devel zlib-devel \
+    hiredis-devel systemd-devel libnftnl-devel libpcap-devel \
+    libevent-devel json-glib-devel mosquitto-devel \
+    mariadb-connector-c-devel ncurses-devel libatomic \
+    gperf perl-IPC-Cmd perl-podlators pandoc \
+    libwebsockets-devel libjwt-devel opus-devel \
+    iptables-devel \
+  && if [ "${WITH_TRANSCODING}" = "yes" ]; then \
+       dnf -y install ffmpeg-devel spandsp-devel; \
+     fi \
+  && dnf -y install gcc-toolset-13 gcc-toolset-13-libatomic-devel \
+  && dnf clean all
+
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/opt/rh/gcc-toolset-13/root/usr/lib64
+ENV PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig
+
+WORKDIR /usr/src/rtpengine
+COPY . .
+
+# Always regenerate config.mk inside the image (never use host config.mk)
+RUN rm -f config.mk \
+  && sed -i \
+      -e 's/ -flto=auto//g' \
+      -e 's/ -ffat-lto-objects//g' \
+      -e 's/ -fuse-linker-plugin//g' \
+      utils/gen-common-flags \
+  && utils/gen-common-flags > config.mk \
+  && (utils/gen-bcg729-flags >> config.mk || true) \
+  && echo "===== config.mk JSON / ffmpeg =====" \
+  && grep -E 'JSON_GLIB|LIBAV|PCAP|CURL' config.mk \
+  && make -C daemon -j"$(nproc)" rtpengine \
+  && if [ "${WITH_TRANSCODING}" = "yes" ]; then \
+       make -C recording-daemon -j"$(nproc)" rtpengine-recording; \
+     fi \
+  && mkdir -p /out \
+  && strip -o /out/rtpengine daemon/rtpengine \
+  && if [ -f recording-daemon/rtpengine-recording ]; then \
+       strip -o /out/rtpengine-recording recording-daemon/rtpengine-recording; \
+     fi \
+  && file /out/* \
+  && /out/rtpengine --version \
+  && if [ -x /out/rtpengine-recording ]; then /out/rtpengine-recording --version; fi \
+  && (strings /out/rtpengine | grep -F 'recording START' | head -2) \
+  && (strings /out/rtpengine-recording | grep -F 'status=SAVED' | head -2)
