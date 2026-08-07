@@ -18,8 +18,11 @@ ports, spool, and kernel table. Production rtpengine services are
 | RTP ports | 40000-60000 | 61000-62998 (no overlap) |
 | Kernel table | 42 | 44 (add only; never del 42) |
 | PID file | /run/rtpengine.pid | /run/rtpengine-test-12.5.pid |
-| Spool | /var/spool/recording | /var/spool/recording-test-12.5 |
-| Output | prod config | /tmp/recordings-test-12.5 |
+| Recording config | /etc/rtpengine-recording.ini | side-by-side-test/rtpengine-recording-test.ini |
+| Spool (meta/pcap) | /var/spool/recording | /var/spool/recording-test-12.5 |
+| WAV output-dir | /tmp/recordings | /tmp/recordings-test-12.5 |
+| output-pattern | .../rtpengine-%c-%t-M%S%u | .../test-%c-%t-M%S%u |
+| output-format / mix | wav, mixed, channels, 8k | same as prod |
 
 Needs existing 12.5 module (xt_RTPENGINE). Does not install DKMS.
 
