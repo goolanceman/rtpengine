@@ -472,16 +472,102 @@ void metafile_delete(char *name) {
 	g_hash_table_remove(metafiles, mf->name);
 	pthread_mutex_unlock(&metafiles_lock);
 
-	ilog(LOG_NOTICE,
-		"recording FINISH    call-id=%s%s%s  meta=%s%s%s  discard=%d"
-		"  output_dir=%s  recording_file=%s  pattern=%s"
-		"  | Recording metafile finished; closing streams/outputs",
-		FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
-		FMT_M(mf->name),
-		mf->discard ? 1 : 0,
-		mf->output_path ? mf->output_path : "(default)",
-		mf->output_dest ? mf->output_dest : "(auto)",
-		mf->output_pattern ? mf->output_pattern : "(default)");
+	{
+		/* Aggregate from streams before destroy (stream_close has not run yet). */
+		int pkts = 0, rtp = 0, rtcp = 0, dec_ok = 0, dec_fail = 0, parse_err = 0, dupe = 0;
+		int st_open = 0, st_empty = 0;
+		gint64 bytes = 0;
+		GString *codecs = g_string_new(NULL);
+		if (mf->streams) {
+			for (guint i = 0; i < mf->streams->len; i++) {
+				stream_t *st = g_ptr_array_index(mf->streams, i);
+				if (!st)
+					continue;
+				st_open++;
+				pkts += st->packets_read;
+				rtp += st->packets_rtp;
+				rtcp += st->packets_rtcp;
+				dec_ok += st->packets_decode_ok;
+				dec_fail += st->packets_decode_fail;
+				parse_err += st->packets_parse_err;
+				dupe += st->packets_dupe;
+				bytes += st->bytes_read;
+				if (st->packets_rtp == 0 && st->fd != -1)
+					st_empty++;
+				else if (st->packets_rtp == 0 && st->packets_read == 0)
+					st_empty++;
+				if (st->codec_seen[0]) {
+					if (codecs->len)
+						g_string_append_c(codecs, ',');
+					g_string_append(codecs, st->codec_seen);
+				}
+			}
+		}
+		gint64 frames = 0, samples = 0;
+		const char *mix_path = "(none)";
+		if (mf->mix_out) {
+			frames = mf->mix_out->frames_written;
+			samples = mf->mix_out->samples_written;
+			if (mf->mix_out->filename)
+				mix_path = mf->mix_out->filename;
+			else if (mf->mix_out->full_filename)
+				mix_path = mf->mix_out->full_filename;
+		}
+		double dur = 0;
+		if (mf->start_time > 0)
+			dur = now_double() - mf->start_time;
+		const char *outcome = "ok";
+		if (mf->discard)
+			outcome = "discarded";
+		else if (rtp == 0)
+			outcome = "no-rtp";
+		else if (dec_fail > 0 && dec_ok == 0)
+			outcome = "decode-failed";
+		else if (dec_fail > 0)
+			outcome = "partial-decode";
+
+		ilog(LOG_NOTICE,
+			"recording FINISH    call-id=%s%s%s  meta=%s%s%s  discard=%d"
+			"  outcome=%s  duration_sec=%.3f  codecs=%s"
+			"  streams=%d  streams_no_rtp=%d"
+			"  packets_read=%d  bytes=%" G_GINT64_FORMAT
+			"  rtp=%d  rtcp=%d  decode_ok=%d  decode_fail=%d  parse_err=%d  dupe=%d"
+			"  forward_ok=%d  forward_fail=%d"
+			"  output_dir=%s  recording_file=%s  pattern=%s"
+			"  mix_file=%s  frames_written=%" G_GINT64_FORMAT
+			"  samples_written=%" G_GINT64_FORMAT
+			"  | Recording metafile finished; closing streams/outputs",
+			FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
+			FMT_M(mf->name),
+			mf->discard ? 1 : 0,
+			outcome, dur,
+			codecs->len ? codecs->str : "(none)",
+			st_open, st_empty,
+			pkts, bytes, rtp, rtcp, dec_ok, dec_fail, parse_err, dupe,
+			g_atomic_int_get(&mf->forward_count),
+			g_atomic_int_get(&mf->forward_failed),
+			mf->output_path ? mf->output_path : "(default)",
+			mf->output_dest ? mf->output_dest : "(auto)",
+			mf->output_pattern ? mf->output_pattern : "(default)",
+			mix_path, frames, samples);
+
+		ilog(LOG_NOTICE,
+			"recording SUMMARY   call-id=%s%s%s  outcome=%s"
+			"  duration_sec=%.3f  codecs=%s  rtp_packets=%d"
+			"  decode_ok=%d  decode_fail=%d  empty_streams=%d  mix_file=%s"
+			"  | Call recording QoS summary",
+			FMT_M(mf->call_id ? mf->call_id : "(unknown)"),
+			outcome, dur,
+			codecs->len ? codecs->str : "(none)",
+			rtp, dec_ok, dec_fail, st_empty, mix_path);
+
+		if (rtp == 0 && !mf->discard)
+			ilog(LOG_WARN,
+				"recording SUMMARY   call-id=%s%s%s"
+				"  | WARN: no RTP for this recording (empty or silent call)",
+				FMT_M(mf->call_id ? mf->call_id : "(unknown)"));
+		g_string_free(codecs, TRUE);
+	}
 
 	meta_destroy(mf);
 

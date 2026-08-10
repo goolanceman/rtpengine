@@ -28,14 +28,52 @@
 void stream_close(stream_t *stream) {
 	if (stream->fd == -1)
 		return;
-	ilog(LOG_NOTICE,
+	metafile_t *mf = stream->metafile;
+	const char *cid = (mf && mf->call_id) ? mf->call_id
+		: (mf && mf->name ? mf->name : "(unknown)");
+	/* stream lock held */
+	int pkts = stream->packets_read;
+	int rtp = stream->packets_rtp;
+	int rtcp = stream->packets_rtcp;
+	int dec_ok = stream->packets_decode_ok;
+	int dec_fail = stream->packets_decode_fail;
+	int parse_err = stream->packets_parse_err;
+	int dupe = stream->packets_dupe;
+	gint64 bytes = stream->bytes_read;
+	const char *codec = stream->codec_seen[0] ? stream->codec_seen : "(none)";
+	if (rtp == 0)
+		ilog(LOG_WARN,
 			"recording STREAM    call-id=%s%s%s"
-			"  status=CLOSED       stream=%s"
+			"  status=CLOSED       stream=%s  codec=%s"
+			"  packets_read=%d  bytes=%" G_GINT64_FORMAT
+			"  rtp=%d  rtcp=%d  decode_ok=%d  decode_fail=%d  parse_err=%d"
+			"  | WARN: no RTP packets on this stream",
+			FMT_M(cid),
+			stream->name ? stream->name : "(unnamed)",
+			codec, pkts, bytes, rtp, rtcp, dec_ok, dec_fail, parse_err);
+	else
+		ilog(LOG_NOTICE,
+			"recording STREAM    call-id=%s%s%s"
+			"  status=CLOSED       stream=%s  codec=%s"
+			"  packets_read=%d  bytes=%" G_GINT64_FORMAT
+			"  rtp=%d  rtcp=%d  decode_ok=%d  decode_fail=%d  parse_err=%d  dupe=%d"
 			"  | Kernel intercept stream closed",
-			FMT_M(stream->metafile && stream->metafile->call_id
-				? stream->metafile->call_id
-				: (stream->metafile && stream->metafile->name ? stream->metafile->name : "(unknown)")),
-			stream->name ? stream->name : "(unnamed)");
+			FMT_M(cid),
+			stream->name ? stream->name : "(unnamed)",
+			codec, pkts, bytes, rtp, rtcp, dec_ok, dec_fail, parse_err, dupe);
+	if (mf) {
+		g_atomic_int_add(&mf->packets_read, pkts);
+		g_atomic_int_add(&mf->packets_rtp, rtp);
+		g_atomic_int_add(&mf->packets_rtcp, rtcp);
+		g_atomic_int_add(&mf->packets_decode_ok, dec_ok);
+		g_atomic_int_add(&mf->packets_decode_fail, dec_fail);
+		g_atomic_int_add(&mf->packets_parse_err, parse_err);
+		g_atomic_int_add(&mf->packets_dupe, dupe);
+		/* bytes accumulated under mf lock elsewhere; approximate here */
+		mf->bytes_read += bytes;
+		if (rtp == 0)
+			g_atomic_int_inc(&mf->streams_no_rtp);
+	}
 	epoll_del(stream->fd);
 	close(stream->fd);
 	stream->fd = -1;
@@ -92,6 +130,8 @@ static void stream_handler(handler_t *handler) {
 		}
 
 		// got a packet
+		stream->packets_read++;
+		stream->bytes_read += ret;
 		pthread_mutex_unlock(&stream->lock);
 
 		if (forward_to){
@@ -166,6 +206,7 @@ void stream_open(metafile_t *mf, unsigned long id, char *name) {
 		"  | Kernel intercept stream opened for reading",
 		FMT_M(mf->call_id ? mf->call_id : mf->name),
 		name, fnbuf);
+	g_atomic_int_inc(&mf->streams_opened);
 
 	// add to epoll
 	stream->handler.ptr = stream;

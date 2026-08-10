@@ -58,6 +58,16 @@ struct stream_s {
 	unsigned int forwarding_on:1;
 	double start_time;
 	unsigned int media_sdp_id;
+	/* per-stream packet/decode counters for lifecycle SUMMARY */
+	volatile gint packets_read;
+	volatile gint64 bytes_read;
+	volatile gint packets_rtp;
+	volatile gint packets_rtcp;
+	volatile gint packets_parse_err;
+	volatile gint packets_decode_ok;
+	volatile gint packets_decode_fail;
+	volatile gint packets_dupe;
+	char codec_seen[64];
 };
 typedef struct stream_s stream_t;
 
@@ -147,6 +157,18 @@ struct metafile_s {
 	volatile gint forward_count;
 	volatile gint forward_failed;
 
+	/* call-level packet/decode summary (aggregated from streams) */
+	volatile gint packets_read;
+	volatile gint64 bytes_read;
+	volatile gint packets_rtp;
+	volatile gint packets_rtcp;
+	volatile gint packets_parse_err;
+	volatile gint packets_decode_ok;
+	volatile gint packets_decode_fail;
+	volatile gint packets_dupe;
+	volatile gint streams_opened;
+	volatile gint streams_no_rtp;
+
 	pthread_mutex_t payloads_lock;
 	char *payload_types[128];
 	char *payload_formats[128];
@@ -172,6 +194,8 @@ struct output_s {
 	gboolean skip_filename_extension;
 	unsigned int channel_mult;
 	double start_time;
+	volatile gint64 frames_written;
+	volatile gint64 samples_written;
 
 	AVFormatContext *fmtctx;
 	AVStream *avst;
