@@ -41,7 +41,7 @@ char *output_dir = NULL;
 static char *output_format = NULL;
 gboolean output_mixed;
 enum mix_method mix_method;
-int mix_num_inputs = MIX_DEFAULT_INPUTS;
+int mix_num_inputs = MIX_MAX_INPUTS;
 gboolean output_single;
 gboolean output_enabled = 1;
 mode_t output_chmod;
