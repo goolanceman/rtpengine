@@ -266,15 +266,18 @@ sufficient for a standard installation of rtpengine.
     from a single input (__output-single__) would be.
 
     The __channels__ mixing method puts each audio input into its own audio channel
-    in the output file, therefore producing a multi-channel output file. Up to four
-    separate RTP SSRCs are supported for a mixed output, which means that if each
-    input is mono audio, then the mixed output file would contain 4 audio channels.
-    This mixing method requires an output file format which supports these kinds of
-    multi-channel audio formats (e.g. __wav__).
+    in the output file, therefore producing a multi-channel output file. Up to
+    sixteen mixer inputs are supported (__\-\-mix-num-inputs__), which means that if
+    each input is mono audio, then the mixed output file would contain that many
+    audio channels. Mixer slots are bound to the RTP stream, so an SSRC change on
+    the same stream (hold/resume, re-INVITE) reuses the existing channel instead of
+    allocating a new one. This mixing method requires an output file format which
+    supports these kinds of multi-channel audio formats (e.g. __wav__).
 
 - __\-\-mix-num-inputs=__*INT*
 
-    Change the number of recording channel in the output file. The value is between 1 to 4 (e.g. __4__, which is also the default value).
+    Change the number of recording channels in the output file. The value is
+    between 1 and 16 (e.g. __4__, which is also the default value).
 
 - __\-\-output-chmod=__*INT*
 

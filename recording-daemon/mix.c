@@ -27,7 +27,8 @@ struct mix_s {
 	uint64_t pts_offs[MIX_MAX_INPUTS]; // initialized at first input seen
 	uint64_t in_pts[MIX_MAX_INPUTS]; // running counter of next expected adjusted pts
 	struct timeval last_use[MIX_MAX_INPUTS]; // to recycle old mix inputs
-	void *input_ref[MIX_MAX_INPUTS]; // to avoid collisions in case of idx re-use
+	void *input_ref[MIX_MAX_INPUTS]; // SSRC owner; avoid collisions on idx re-use
+	void *stream_ref[MIX_MAX_INPUTS]; // stream owner; reuse slot across SSRC changes
 	CH_LAYOUT_T channel_layout[MIX_MAX_INPUTS];
 	AVFilterContext *amix_ctx;
 	AVFilterContext *sink_ctx;
@@ -79,29 +80,67 @@ static void mix_input_reset(mix_t *mix, unsigned int idx) {
 	mix->pts_offs[idx] = (uint64_t) -1LL;
 	ZERO(mix->last_use[idx]);
 	mix->input_ref[idx] = NULL;
+	mix->stream_ref[idx] = NULL;
 	mix->in_pts[idx] = 0;
 }
 
 
-unsigned int mix_get_index(mix_t *mix, void *ptr, unsigned int media_sdp_id) {
-	unsigned int next = mix->next_idx++;
-	if (mix_output_per_media) {
-		next = media_sdp_id;
-		if (next >= mix_num_inputs) {
-			ilog(LOG_WARNING, "Error with mix_output_per_media sdp_label next %i is bigger than mix_num_inputs %i", next, mix_num_inputs );
+static unsigned int mix_assign_index(mix_t *mix, unsigned int idx, void *ssrc, stream_t *stream) {
+	mix->input_ref[idx] = ssrc;
+	mix->stream_ref[idx] = stream;
+	if (idx >= mix->next_idx)
+		mix->next_idx = idx + 1;
+	return idx;
+}
+
+
+unsigned int mix_get_index(mix_t *mix, void *ssrc, stream_t *stream, unsigned int media_sdp_id) {
+	unsigned int i;
+
+	// Same SSRC already owns a slot (payload-type change on the same SSRC).
+	for (i = 0; i < mix_num_inputs; i++) {
+		if (mix->input_ref[i] == ssrc)
+			return i;
+	}
+
+	// New SSRC on an existing stream (hold/resume, re-INVITE). Keep the stream
+	// on the same mixer channel and reset PTS so we do not fill 30s of silence.
+	if (stream) {
+		for (i = 0; i < mix_num_inputs; i++) {
+			if (mix->stream_ref[i] == stream) {
+				ilog(LOG_DEBUG, "Re-using mix input index #%u for new SSRC on same stream", i);
+				mix_input_reset(mix, i);
+				return mix_assign_index(mix, i, ssrc, stream);
+			}
 		}
 	}
 
-	if (next < mix_num_inputs) {
-		// must be unused
-		mix->input_ref[next] = ptr;
-		return next;
+	unsigned int next = mix->next_idx;
+	if (mix_output_per_media) {
+		next = media_sdp_id;
+		if (next >= (unsigned int) mix_num_inputs) {
+			ilog(LOG_WARNING, "Error with mix_output_per_media sdp_label next %u is bigger than mix_num_inputs %i",
+					next, mix_num_inputs);
+		}
 	}
 
-	// too many inputs - find one to re-use
+	if (next < (unsigned int) mix_num_inputs &&
+			(!mix->input_ref[next] || mix->stream_ref[next] == stream)) {
+		if (mix->input_ref[next] && mix->input_ref[next] != ssrc)
+			mix_input_reset(mix, next);
+		return mix_assign_index(mix, next, ssrc, stream);
+	}
+
+	// Prefer an unused slot over evicting a live stream.
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (!mix->input_ref[i])
+			return mix_assign_index(mix, i, ssrc, stream);
+	}
+
+	// too many concurrent streams - find one to re-use
 	struct timeval earliest = {0,};
 	next = 0;
-	for (unsigned int i = 0; i < mix_num_inputs; i++) {
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
 		if (earliest.tv_sec == 0 || timeval_cmp(&earliest, &mix->last_use[i]) > 0) {
 			next = i;
 			earliest = mix->last_use[i];
@@ -110,8 +149,7 @@ unsigned int mix_get_index(mix_t *mix, void *ptr, unsigned int media_sdp_id) {
 
 	ilog(LOG_DEBUG, "Re-using mix input index #%u", next);
 	mix_input_reset(mix, next);
-	mix->input_ref[next] = ptr;
-	return next;
+	return mix_assign_index(mix, next, ssrc, stream);
 }
 
 
