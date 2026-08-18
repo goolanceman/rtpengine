@@ -486,39 +486,43 @@ rm -rf ./run ./mac-binaries ./build-tools/logs
 
 ---
 
-## 12.5.1.31 rich logs — Debian package + side-by-side test
+## 12.5.1.31 rich logs — one bin dir per OS
 
-Branch: rich-recording-logs-12.5.1.31.
+See `build-tools/BINS.md`. Canonical dirs only:
+
+| OS | Directory |
+|----|-----------|
+| Debian siprec | `release-bins/12.5.1.31-rich-logs/debian/` |
+| RHEL 8 lab | `release-bins/12.5.1.31-rich-logs/rhel/` |
 
 | Artifact | How |
 |----------|-----|
-| Debian userspace bins | ./build-tools/docker-build-binaries.sh → debian-bins/bins/ |
-| Package assembly | python3 build-tools/package-debian-bins.py → debian-bins/ |
-| RHEL8 bins (lab) | ./build-tools/docker-build-rhel-binaries.sh → rhel-binaries-12.5.1.31/ |
+| Debian userspace bins | `./build-tools/docker-build-binaries.sh` → `release-bins/.../debian/` |
+| RHEL8 bins | `./build-tools/docker-build-rhel-binaries.sh` → `release-bins/.../rhel/` |
+| Deploy tarball | `./build-tools/package-rich-logs-tarball.sh` → `rtpengine-12.5.1.31-rich-logs-<UTC YYYYMMDDHHMMSS>.tar.gz` |
+| Optional debian staging | `python3 build-tools/package-debian-bins.py` (copies from the debian dir above) |
+
+Do **not** recreate `rhel-binaries/`, `rhel-binaries-12.5.1.31/`, or `rhel/bins/`.
 
 ### Side-by-side (does NOT stop production)
 
-Source under build-tools/side-by-side-test/ is copied into the package as
-debian-bins/side-by-side-test/.
-
-    cd debian-bins/side-by-side-test
-    # Debian siprec (default bins):
-    sudo bash run-test.sh install-units
+    cd ~/rtpengine
+    BIN_DIR="$PWD/release-bins/12.5.1.31-rich-logs/debian" \
+      sudo -E bash build-tools/side-by-side-test/run-test.sh install-units
     # RHEL lab:
-    # BIN_DIR=/path/to/rhel-binaries-12.5.1.31 sudo -E bash run-test.sh install-units
-    sudo bash run-test.sh start
-    sudo bash run-test.sh smoke
-    sudo bash run-test.sh stop
-    sudo bash run-test.sh uninstall-units
+    # BIN_DIR="$PWD/release-bins/12.5.1.31-rich-logs/rhel" sudo -E bash ...
+    sudo bash build-tools/side-by-side-test/run-test.sh start
+    sudo bash build-tools/side-by-side-test/run-test.sh smoke
+    sudo bash build-tools/side-by-side-test/run-test.sh stop
+    sudo bash build-tools/side-by-side-test/run-test.sh uninstall-units
 
 Isolation: NG 127.0.0.1:23222, table 44, spool /var/spool/recording-test-12.5,
 units rtpengine-test / rtpengine-recording-test.
 
 ### Promote after smoke
 
-    cd debian-bins
-    sudo bash install-on-debian-siprec.sh
+    BIN_DIR="$PWD/release-bins/12.5.1.31-rich-logs/debian" \
+      sudo -E bash build-tools/install-on-debian-siprec-userspace.sh promote
 
 Installer ALWAYS backs up current bins + configs to
 /var/backups/rtpengine-rich-logs/<timestamp>/ before stop/replace.
-Source: build-tools/install-on-debian-siprec-userspace.sh.

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Build EL8/RHEL8-compatible rtpengine + rtpengine-recording via Docker and extract.
+# Build EL8/RHEL8-compatible rtpengine + rtpengine-recording via Docker and extract
+# into the canonical RHEL dir: release-bins/12.5.1.31-rich-logs/rhel/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-OUT_DIR="${OUT_DIR:-${ROOT_DIR}/rhel-binaries}"
+OUT_DIR="${OUT_DIR:-${ROOT_DIR}/release-bins/12.5.1.31-rich-logs/rhel}"
 DOCKERFILE="${DOCKERFILE:-${SCRIPT_DIR}/Dockerfile.rhel8}"
 IMAGE_BUILD="${IMAGE_BUILD:-rtpengine-rhel8-build:local}"
 IMAGE_BINARIES="${IMAGE_BINARIES:-rtpengine-rhel8-binaries:local}"

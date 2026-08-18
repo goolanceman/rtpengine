@@ -252,7 +252,7 @@ sufficient for a standard installation of rtpengine.
     stream and do not take timestamping into account, meaning that gaps or pauses
     in the RTP stream are not reflected in the output audio file.
 
-    A __mixed__ audio file consists of the first four RTP SSRC seen, mixed together
+    A __mixed__ audio file consists of the configured RTP SSRC inputs, mixed together
     into a single output file, which usually means that a bidirectional audio
     stream is produced. Audio mixing takes RTP timestamping into account, so gaps
     and pauses in the RTP media are reflected in the output audio to keep the
@@ -277,7 +277,7 @@ sufficient for a standard installation of rtpengine.
 - __\-\-mix-num-inputs=__*INT*
 
     Change the number of recording channels in the output file. The value is
-    between 1 and 16 (e.g. __4__, which is also the default value).
+    between 1 and 16 (e.g. __16__, which is the default value).
 
 - __\-\-output-chmod=__*INT*
 

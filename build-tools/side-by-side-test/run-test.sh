@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(cd "${ROOT}/.." && pwd)"
 # BIN resolved lazily in resolve_bin() so status/stop/logs work without BIN_DIR.
-# On RHEL lab: BIN_DIR=/path/to/rhel-binaries sudo -E bash run-test.sh install-units
+# Default bins: release-bins/12.5.1.31-rich-logs/{debian|rhel}  (see build-tools/BINS.md)
+# Override: BIN_DIR=... sudo -E bash run-test.sh install-units
 BIN=""
 UNIT_DIR=/etc/systemd/system
 PROD_D=rtpengine.service
@@ -21,21 +22,32 @@ OUTDIR=/tmp/recordings-test-12.5
 die() { echo "ERROR: $*" >&2; exit 1; }
 need_root() { [[ $(id -u) -eq 0 ]] || die "run as root: sudo $0 $*"; }
 
+canonical_os_bins() {
+  local id=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    id="$(. /etc/os-release; echo "${ID_LIKE:-} ${ID:-}")"
+  fi
+  case " ${id} " in
+    *rhel*|*centos*|*fedora*|*rocky*|*almalinux*|*ol*) echo rhel ;;
+    *) echo debian ;;
+  esac
+}
+
 resolve_bin() {
-  # Priority: BIN_DIR env → .bin-dir from last install-units → ../bins (debian package)
-  local cand=""
+  # Priority: BIN_DIR env → .bin-dir → packaged ../bins → OS-matched release-bins
+  local cand="" os
+  os="$(canonical_os_bins)"
   if [[ -n "${BIN_DIR:-}" ]]; then
     cand="${BIN_DIR}"
   elif [[ -f "${ROOT}/.bin-dir" ]]; then
     cand="$(cat "${ROOT}/.bin-dir")"
   elif [[ -d "${PKG}/bins" ]]; then
     cand="${PKG}/bins"
-  elif [[ -d "${ROOT}/../../release-bins/12.5.1.31-rich-logs/rhel" ]]; then
-    cand="${ROOT}/../../release-bins/12.5.1.31-rich-logs/rhel"
-  elif [[ -d "${ROOT}/../../release-bins/12.5.1.31-rich-logs/debian" ]]; then
-    cand="${ROOT}/../../release-bins/12.5.1.31-rich-logs/debian"
+  elif [[ -x "${ROOT}/../../release-bins/12.5.1.31-rich-logs/${os}/rtpengine" ]]; then
+    cand="${ROOT}/../../release-bins/12.5.1.31-rich-logs/${os}"
   else
-    die "no bins found; set BIN_DIR=... or run from package with bins/ next to harness"
+    die "no bins found; set BIN_DIR= to release-bins/12.5.1.31-rich-logs/{debian|rhel}"
   fi
   [[ -d "$cand" ]] || die "bins dir missing: $cand (set BIN_DIR=...)"
   BIN="$(cd "$cand" && pwd)"

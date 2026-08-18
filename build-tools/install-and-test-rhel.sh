@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Install rhel-binaries + shared libs, configure systemd drop-ins, start units, NG smoke.
+# Install canonical RHEL bins + shared libs, configure systemd drop-ins, start units, NG smoke.
+# Default BIN_DIR: release-bins/12.5.1.31-rich-logs/rhel/  (see build-tools/BINS.md)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BIN_DIR="${BIN_DIR:-${ROOT_DIR}/rhel-binaries}"
+BIN_DIR="${BIN_DIR:-${ROOT_DIR}/release-bins/12.5.1.31-rich-logs/rhel}"
 LIB_DIR="${LIB_DIR:-${BIN_DIR}/lib}"
 IMAGE="${IMAGE:-rtpengine-rhel8-build:local}"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/build-tools/logs}"

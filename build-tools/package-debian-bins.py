@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Assemble debian-bins deploy package (bins + kmod extract + install script)."""
+"""Assemble optional debian-bins staging package from the canonical Debian dir.
+
+Official bins live in release-bins/12.5.1.31-rich-logs/debian/ (see BINS.md).
+This script only copies those bins into a debian-bins/ staging tree.
+"""
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "debian-bins"
+CANONICAL = ROOT / "release-bins" / "12.5.1.31-rich-logs" / "debian"
 SHA = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], text=True).strip()
 
 
@@ -60,17 +64,15 @@ def main() -> None:
     shutil.rmtree(extract)
 
     bins = OUT / "bins"
-    if not (bins / "rtpengine").exists():
-        env = os.environ.copy()
-        env["OUT_DIR"] = str(bins)
-        env["IMAGE_DAEMON"] = "rtpengine-debian-trixie:daemon"
-        env["IMAGE_RECORDING"] = "rtpengine-debian-trixie:recording"
-        env["DOCKERFILE"] = "Dockerfile"
-        subprocess.check_call([str(ROOT / "build-tools" / "docker-build-binaries.sh")], cwd=ROOT, env=env)
-
     for b in ("rtpengine", "rtpengine-recording"):
-        p = bins / b
-        p.chmod(0o755)
+        src = CANONICAL / b
+        if not src.exists():
+            raise SystemExit(
+                f"missing {src} — put Debian bins in release-bins/12.5.1.31-rich-logs/debian/ "
+                "(see build-tools/BINS.md)"
+            )
+        shutil.copy2(src, bins / b)
+        (bins / b).chmod(0o755)
 
     # Prefer maintained userspace-only installer (backup-first); fall back to embedded INSTALL_SH.
     userspace_src = ROOT / "build-tools" / "install-on-debian-siprec-userspace.sh"
@@ -253,9 +255,9 @@ Built from branch rich-recording-logs-12.5.1.31 commit {SHA}.
 Test uses NG 127.0.0.1:23222, table 44, spool /var/spool/recording-test-12.5.
 Production NG/ports/units stay running.
 
-On RHEL lab (not Debian glibc), point BIN_DIR at RHEL-built bins:
+On RHEL lab (not Debian glibc), point BIN_DIR at the canonical RHEL dir:
 
-    BIN_DIR=/path/to/rhel-binaries-12.5.1.31 sudo -E bash run-test.sh install-units
+    BIN_DIR=/path/to/release-bins/12.5.1.31-rich-logs/rhel sudo -E bash run-test.sh install-units
 
 ## Promote (after smoke OK)
 

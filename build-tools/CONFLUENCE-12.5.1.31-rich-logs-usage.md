@@ -31,13 +31,18 @@ On the **siprec host**:
     git checkout rich-recording-logs-12.5.1.31
     git pull origin rich-recording-logs-12.5.1.31
 
-Confirm release binaries exist:
+Confirm release binaries exist (canonical Debian dir only — see `build-tools/BINS.md`):
 
     ls -la release-bins/12.5.1.31-rich-logs/debian/
     # expect: rtpengine  rtpengine-recording
 
     file release-bins/12.5.1.31-rich-logs/debian/rtpengine
     file release-bins/12.5.1.31-rich-logs/debian/rtpengine-recording
+
+Rebuild the deploy tarball after replacing bins (filename always ends with UTC datetime):
+
+    ./build-tools/package-rich-logs-tarball.sh
+    # → rtpengine-12.5.1.31-rich-logs-YYYYMMDDHHMMSS.tar.gz
 
 Confirm production is 12.5 + xt_RTPENGINE (typical):
 
@@ -107,10 +112,11 @@ Sibling copies: /usr/bin/rtpengine-recording.bak.<TS> etc.
 
 Without BIN_DIR, first match wins:
 
-1. BIN_DIR env  
-2. build-tools/bins  
-3. release-bins/12.5.1.31-rich-logs/debian  
-4. debian-bins/bins  
+1. BIN_DIR env
+2. packaged `bins/` next to the script
+3. OS-matched `release-bins/12.5.1.31-rich-logs/{debian|rhel}`
+
+See `build-tools/BINS.md`. Do not use `rhel-binaries/` or `debian-bins/bins`.
 
 Promote steps: resolve all install paths → mandatory backup → stop both services → install both bins (forces /usr/bin/rtpengine-recording) → sha256 + string verify → start → verify running /proc/MainPID/exe.
 
@@ -266,8 +272,10 @@ Script refused success; fix and re-promote.
 | Item | Path |
 |------|------|
 | Branch | rich-recording-logs-12.5.1.31 |
-| Debian bins | release-bins/12.5.1.31-rich-logs/debian/ |
-| RHEL bins (lab only) | release-bins/12.5.1.31-rich-logs/rhel/ |
+| **Debian bins (only)** | `release-bins/12.5.1.31-rich-logs/debian/` |
+| **RHEL bins (only)** | `release-bins/12.5.1.31-rich-logs/rhel/` |
+| Bin-dir policy | `build-tools/BINS.md` |
+| Deploy tarball script | `build-tools/package-rich-logs-tarball.sh` |
 | Promote/rollback script | build-tools/install-on-debian-siprec-userspace.sh |
 | Recording emergency fix | build-tools/fix-recording-bin-on-siprec.sh |
 | Side-by-side harness | build-tools/side-by-side-test/ |

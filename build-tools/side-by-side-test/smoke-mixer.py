@@ -122,15 +122,27 @@ def main():
     sb = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sa.bind(("127.0.0.1", 0))
     sb.bind(("127.0.0.1", 0))
-    a_ssrcs = [0x0A9B50C, 0x0101A0E4, 0xBB215A44]
-    b_ssrcs = [0x3FA4A7BF, 0x2F99354D, 0xE7C4F263]
+    a_ssrcs = [0x280BAC2B, 0x6C8DDFEB]
+    b_ssrcs = [0x216C7801, 0x3FA4A7BF]
     aseq = bseq = 1000
     ats = bts = 8000
-    for i, (assrc, bssrc) in enumerate(zip(a_ssrcs, b_ssrcs)):
-        print("burst %d A=0x%x B=0x%x" % (i, assrc, bssrc))
-        aseq, ats = send_burst(sa, (a_ip, a_port), assrc, aseq, ats)
-        bseq, bts = send_burst(sb, (b_ip, b_port), bssrc, bseq, bts)
-        time.sleep(0.3)
+    # Phase 1: overlapping SSRCs on the same stream (prod SIPREC/AMR SID case).
+    print("overlap A=0x%x+0x%x" % (a_ssrcs[0], a_ssrcs[1]))
+    for i in range(40):
+        sa.sendto(rtp_pkt(aseq + i, ats + i * 160, a_ssrcs[0]), (a_ip, a_port))
+        if i >= 5:
+            sa.sendto(rtp_pkt(aseq + 200 + i, ats + i * 160, a_ssrcs[1]), (a_ip, a_port))
+        sb.sendto(rtp_pkt(bseq + i, bts + i * 160, b_ssrcs[0]), (b_ip, b_port))
+        time.sleep(0.02)
+    aseq += 250
+    ats += 40 * 160
+    bseq += 40
+    bts += 40 * 160
+    # Phase 2: idle >1s, then new SSRC (hold/resume reuse).
+    print("idle 1.2s then resume SSRC")
+    time.sleep(1.2)
+    aseq, ats = send_burst(sa, (a_ip, a_port), a_ssrcs[1], aseq, ats, n=20)
+    bseq, bts = send_burst(sb, (b_ip, b_port), b_ssrcs[1], bseq, bts, n=20)
     sa.close()
     sb.close()
     time.sleep(0.5)

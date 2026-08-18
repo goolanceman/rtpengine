@@ -3,10 +3,11 @@
 docs/_*
 config.mk
 
-# local build outputs
+# local / leftover extract dirs (official bins: release-bins/12.5.1.31-rich-logs/{debian,rhel})
 /debian-bins/
 /rhel-binaries/
 /rhel-binaries-*/
 /rhel/
 /mac-binaries/
+*.tar.gz.bak.*
 config.mk

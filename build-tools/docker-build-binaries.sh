@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Build Linux rtpengine + rtpengine-recording binaries via Docker and extract them.
+# Build Linux rtpengine + rtpengine-recording binaries via Docker and extract them
+# into the canonical Debian dir: release-bins/12.5.1.31-rich-logs/debian/
+# Override OUT_DIR=... for a scratch extract (e.g. mac-binaries).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-OUT_DIR="${OUT_DIR:-${ROOT_DIR}/mac-binaries}"
+OUT_DIR="${OUT_DIR:-${ROOT_DIR}/release-bins/12.5.1.31-rich-logs/debian}"
 DOCKERFILE="${DOCKERFILE:-Dockerfile}"
 IMAGE_DAEMON="${IMAGE_DAEMON:-rtpengine-localbuild:daemon}"
 IMAGE_RECORDING="${IMAGE_RECORDING:-rtpengine-localbuild:recording}"

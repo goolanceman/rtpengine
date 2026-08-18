@@ -1,6 +1,6 @@
 # 12.5.1.31 rich-recording-logs binaries
 
-Prebuilt userspace binaries from branch rich-recording-logs-12.5.1.31.
+**This is the only official bin location.** See `build-tools/BINS.md`.
 
 | Path | Target |
 |------|--------|
@@ -10,10 +10,18 @@ Prebuilt userspace binaries from branch rich-recording-logs-12.5.1.31.
 | rhel/rtpengine-recording | RHEL 8 / EL8 |
 
 Do **not** mix: Debian bins will not run on RHEL (GLIBC/OpenSSL mismatch).
+Do **not** keep extra copies (`rhel-binaries/`, `rhel-binaries-12.5.1.31/`, `rhel/bins/`, `debian-bins/bins` as a source).
+
+Recording mixer: stream-pin + 1s idle-guard. Overlapping SSRCs on one SIPREC
+stream keep separate slots (AMR SID + speech). Hold/resume still reuses after
+1s quiet. Packager requires both mixer markers.
+
+Rebuild the deploy tarball after replacing bins (datetime is appended):
+
+    ./build-tools/package-rich-logs-tarball.sh
+    # → rtpengine-12.5.1.31-rich-logs-YYYYMMDDHHMMSS.tar.gz
 
 ## Side-by-side test (recommended first)
-
-Use build-tools/side-by-side-test (shipped in debian package tarball too):
 
     # On Debian siprec:
     BIN_DIR=$PWD/release-bins/12.5.1.31-rich-logs/debian sudo -E bash build-tools/side-by-side-test/run-test.sh install-units
@@ -22,11 +30,8 @@ Use build-tools/side-by-side-test (shipped in debian package tarball too):
 
 ## Promote (after smoke)
 
-Installer expects package layout with bins/ next to script. Either:
+    BIN_DIR=$PWD/release-bins/12.5.1.31-rich-logs/debian \
+      sudo -E bash build-tools/install-on-debian-siprec-userspace.sh promote
+    # RHEL lab:
+    # BIN_DIR=$PWD/release-bins/12.5.1.31-rich-logs/rhel sudo -E bash ... promote
 
-    mkdir -p /tmp/rtp-pkg/bins
-    cp release-bins/12.5.1.31-rich-logs/debian/* /tmp/rtp-pkg/bins/
-    cp build-tools/install-on-debian-siprec-userspace.sh /tmp/rtp-pkg/install-on-debian-siprec.sh
-    sudo bash /tmp/rtp-pkg/install-on-debian-siprec.sh
-
-Or use the packaged tarball from the release machine.

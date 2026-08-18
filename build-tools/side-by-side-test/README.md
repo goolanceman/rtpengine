@@ -28,24 +28,26 @@ Needs existing 12.5 module (xt_RTPENGINE). Does not install DKMS.
 
 ## Binaries / OS
 
-- On **Debian siprec**: default `debian-bins/bins/` (built against Debian glibc/OpenSSL 3).
-- On **RHEL lab**: Debian bins will not run (GLIBC/OpenSSL mismatch). Point at RHEL build:
+One dir per OS (see `build-tools/BINS.md`). Do not use `rhel-binaries/` or `debian-bins/bins`.
 
-      BIN_DIR=/path/to/rhel-binaries-12.5.1.31 sudo -E bash run-test.sh install-units
+- **Debian siprec:** `release-bins/12.5.1.31-rich-logs/debian/`
+- **RHEL lab:** `release-bins/12.5.1.31-rich-logs/rhel/` (Debian bins will not run)
 
 ## Commands
 
-    cd debian-bins/side-by-side-test
-    # Debian host (default bins):
-    sudo bash run-test.sh install-units
-    # or RHEL host:
-    # BIN_DIR=../../rhel-binaries-12.5.1.31 sudo -E bash run-test.sh install-units
-    sudo bash run-test.sh start
-    sudo bash run-test.sh status
-    sudo bash run-test.sh smoke
-    sudo bash run-test.sh logs
-    sudo bash run-test.sh stop
-    sudo bash run-test.sh uninstall-units
+    cd ~/rtpengine
+    # Debian siprec:
+    BIN_DIR="$PWD/release-bins/12.5.1.31-rich-logs/debian" \
+      sudo -E bash build-tools/side-by-side-test/run-test.sh install-units
+    # RHEL lab:
+    # BIN_DIR="$PWD/release-bins/12.5.1.31-rich-logs/rhel" \
+    #   sudo -E bash build-tools/side-by-side-test/run-test.sh install-units
+    sudo bash build-tools/side-by-side-test/run-test.sh start
+    sudo bash build-tools/side-by-side-test/run-test.sh status
+    sudo bash build-tools/side-by-side-test/run-test.sh smoke
+    sudo bash build-tools/side-by-side-test/run-test.sh logs
+    sudo bash build-tools/side-by-side-test/run-test.sh stop
+    sudo bash build-tools/side-by-side-test/run-test.sh uninstall-units
 
 ## Promote after smoke OK
 
