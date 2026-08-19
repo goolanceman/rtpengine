@@ -11,8 +11,7 @@ REL="${ROOT}/release-bins/12.5.1.31-rich-logs"
 DEB="${REL}/debian"
 RHEL="${REL}/rhel"
 NAME="rtpengine-12.5.1.31-rich-logs"
-MARKER_REUSE='Re-using mix input index #%u for new SSRC on same stream'
-MARKER_IDLE='Not re-using mix input index #%u: previous SSRC still active'
+MARKER_REUSE='Re-using mix input index #%u'
 TS="$(date -u +%Y%m%d%H%M%S)"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SHA="$(git -C "${ROOT}" rev-parse --short HEAD)"
@@ -40,9 +39,7 @@ need_bins() {
   [[ -x "${d}/rtpengine" ]] || die "missing ${d}/rtpengine (${label})"
   [[ -x "${d}/rtpengine-recording" ]] || die "missing ${d}/rtpengine-recording (${label})"
   grep -aFq "${MARKER_REUSE}" "${d}/rtpengine-recording" \
-    || die "${label} recording bin missing mixer reuse marker"
-  grep -aFq "${MARKER_IDLE}" "${d}/rtpengine-recording" \
-    || die "${label} recording bin missing idle-guard marker (rebuild bins first)"
+    || die "${label} recording bin missing mixer marker"
 }
 
 need_bins "${DEB}" debian
@@ -104,7 +101,8 @@ Canonical bins (do not use rhel-binaries/ or debian-bins/):
   Debian: release-bins/12.5.1.31-rich-logs/debian/
   RHEL:   release-bins/12.5.1.31-rich-logs/rhel/
 
-Mixer fix (${SHA}): stream-pin + 1s idle-guard so overlapping SSRCs keep separate slots; MIX_MAX_INPUTS=16.
+Recording fix (${SHA}): ignore RTPengine's synthetic NAT-piercing probe (PT 127,
+sequence 65535, SSRC 0) instead of passing it to the audio decoder.
 
 Promote on Debian siprec:
   BIN_DIR="\$PWD/release-bins/12.5.1.31-rich-logs/debian" \\
@@ -129,10 +127,9 @@ for p in debian rhel; do
   echo "-- ${p} recording --"
   tmp="$(mktemp)"
   tar -xOf "${OUT}" "${NAME}/release-bins/12.5.1.31-rich-logs/${p}/rtpengine-recording" > "${tmp}"
-  grep -aFq "${MARKER_REUSE}" "${tmp}" || { rm -f "${tmp}"; die "${p} packaged recording missing mixer reuse marker"; }
-  grep -aFq "${MARKER_IDLE}" "${tmp}" || { rm -f "${tmp}"; die "${p} packaged recording missing idle-guard marker"; }
+  grep -aFq "${MARKER_REUSE}" "${tmp}" || { rm -f "${tmp}"; die "${p} packaged recording missing mixer marker"; }
   rm -f "${tmp}"
-  echo "OK mixer reuse + idle-guard markers"
+  echo "OK mixer marker"
   sha256sum "${REL}/${p}/rtpengine-recording"
 done
 echo "OK ${OUT} sha=${SHA} built_at=${BUILT_AT}"

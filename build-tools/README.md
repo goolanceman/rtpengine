@@ -451,6 +451,7 @@ some network FS are not).
 | `docker-build-binaries.sh` | Build + extract ELF binaries to `./mac-binaries/` |
 | `rebase-onto-master.sh` | Rebase current branch onto `origin/master` |
 | `rebase-and-build.sh` | Rebase, then extract binaries |
+| `deploy-debian-siprec-cluster.sh` | Build, package, copy, and sequentially promote Debian SIPREC userspace bins |
 
 ```bash
 OUT_DIR=./dist ./build-tools/docker-build-binaries.sh
@@ -526,3 +527,31 @@ units rtpengine-test / rtpengine-recording-test.
 
 Installer ALWAYS backs up current bins + configs to
 /var/backups/rtpengine-rich-logs/<timestamp>/ before stop/replace.
+
+### Debian SIPREC pair deployment
+
+For a Debian SIPREC cluster, use the cluster wrapper from the repository root.
+It builds both Debian userspace binaries, creates a SHA-256 protected tarball,
+copies and extracts it on the remote host, and promotes sequentially. It does
+not install or replace the kernel module.
+
+```bash
+./build-tools/deploy-debian-siprec-cluster.sh
+./build-tools/deploy-debian-siprec-cluster.sh --promote \
+  euprod2-frankfurt-siprec-01 euprod2-frankfurt-siprec-02
+```
+
+The default aliases are read from `~/.ssh/config`, including the configured
+SSH user. Set `SSH_USER=...` only when overriding that configuration. The
+remote staging directory defaults to
+`/var/tmp/rtpengine-rich-logs-deploy`. Each host is preflighted, checksum
+verified, backed up under `/var/backups/rtpengine-rich-logs/`, promoted, and
+checked for active `rtpengine` and `rtpengine-recording` services before the
+next host is touched. A failure stops the rollout.
+
+For rollback, log in to the affected host and use the backup-aware installer:
+
+```bash
+sudo bash build-tools/install-on-debian-siprec-userspace.sh list-backups
+sudo bash build-tools/install-on-debian-siprec-userspace.sh rollback latest
+```

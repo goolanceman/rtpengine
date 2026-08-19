@@ -37,6 +37,40 @@ static void ssrc_tls_log_errors(void) {
 	}
 }
 
+/* rtpengine's "pierce NAT" sends this empty RTP-shaped probe before the
+ * endpoint has sent real media. It is not audio and must not be decoded. */
+static bool packet_is_nat_probe(const packet_t *packet) {
+	if (!packet || !packet->rtp || packet->payload.len)
+		return false;
+	return (packet->rtp->m_pt & 0x7f) == 127
+		&& ntohs(packet->rtp->seq_num) == 0xffff
+		&& ntohl(packet->rtp->timestamp) == 0
+		&& ntohl(packet->rtp->ssrc) == 0;
+}
+
+static bool payload_is_supplemental(const char *payload_str) {
+	if (!payload_str)
+		return false;
+
+	const char *slash = strchr(payload_str, '/');
+	if (!slash)
+		return false;
+
+	str name = STR_INIT_LEN(payload_str, slash - payload_str);
+	const codec_def_t *def = codec_find(&name, MT_AUDIO);
+	return def && (def->supplemental || def->dtmf);
+}
+
+static bool payload_type_is_ignored(const ssrc_t *ssrc, unsigned int payload_type) {
+	return (ssrc->ignored_payload_types[payload_type >> 6]
+			& (UINT64_C(1) << (payload_type & 63))) != 0;
+}
+
+static void ignore_payload_type(ssrc_t *ssrc, unsigned int payload_type) {
+	ssrc->ignored_payload_types[payload_type >> 6]
+		|= UINT64_C(1) << (payload_type & 63);
+}
+
 static int ssrc_tls_check_blocked(SSL *ssl, int ret) {
 	if (!ssl)
 		return 0;
@@ -335,6 +369,17 @@ static void packet_decode(ssrc_t *ssrc, packet_t *packet) {
 			payload_str = rpt->encoding_with_params.s;
 		}
 
+		/* telephone-event and comfort-noise are valid RTP payloads, but they
+		 * are not audio frames that this recording decoder should decode. */
+		if (payload_is_supplemental(payload_str)) {
+			if (!payload_type_is_ignored(ssrc, payload_type)) {
+				ilog(LOG_NOTICE, "Ignoring supplemental RTP payload type %u (%s)",
+						payload_type, payload_str);
+				ignore_payload_type(ssrc, payload_type);
+			}
+			return;
+		}
+
 		dbg("payload type for %u is %s", payload_type, payload_str);
 		if (ssrc->stream && !ssrc->stream->codec_seen[0] && payload_str)
 			snprintf(ssrc->stream->codec_seen, sizeof(ssrc->stream->codec_seen),
@@ -426,6 +471,8 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 		goto err;
 	if (rtp_padding(packet->rtp, &packet->payload))
 		goto err;
+	if (packet_is_nat_probe(packet))
+		goto ignore;
 
 	packet->p.seq = ntohs(packet->rtp->seq_num);
 	unsigned long ssrc_num = ntohl(packet->rtp->ssrc);

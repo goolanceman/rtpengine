@@ -93,6 +93,9 @@ struct ssrc_s {
 	unsigned long ssrc;
 	packet_sequencer_t sequencer;
 	decode_t *decoders[128];
+	/* RTP payloads such as telephone-event/CN are valid supplemental
+	 * packets, but are not audio frames for the recording decoder. */
+	uint64_t ignored_payload_types[2];
 	output_t *output;
 
 	// TLS output

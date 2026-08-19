@@ -48,6 +48,49 @@ python3 build-tools/side-by-side-test/test-mix-index.py
 # expect 0 x "old re-used input channel"
 ```
 
+## Debian SIPREC cluster deployment
+
+Use `deploy-debian-siprec-cluster.sh` when the Debian binaries must be built,
+packaged, copied, and promoted to both SIPREC hosts. The script uses the SSH
+aliases in `~/.ssh/config`; the verified Frankfurt aliases are:
+
+- `euprod2-frankfurt-siprec-01` (SSH user `mansoor` from SSH config)
+- `euprod2-frankfurt-siprec-02` (SSH user `mansoor` from SSH config)
+
+Build and create a checksum-protected tarball without changing hosts:
+
+```bash
+./build-tools/deploy-debian-siprec-cluster.sh
+```
+
+Promote the generated Debian userspace binaries sequentially:
+
+```bash
+./build-tools/deploy-debian-siprec-cluster.sh --promote \
+  euprod2-frankfurt-siprec-01 euprod2-frankfurt-siprec-02
+```
+
+The script builds with Docker, verifies the archive checksum after `scp`,
+extracts under `/var/tmp/rtpengine-rich-logs-deploy`, and invokes the
+backup-first installer on one host at a time. It verifies both
+`rtpengine.service` and `rtpengine-recording.service` before proceeding to the
+next host. The installer creates backups under
+`/var/backups/rtpengine-rich-logs/`; the kernel module is not changed.
+
+To use another SSH user or host pair, set `SSH_USER` or pass explicit host
+arguments. To reuse the canonical binaries without rebuilding and choose the
+archive output path, use `--no-build --archive PATH --promote HOST1 HOST2`.
+The canonical Debian binaries must still be available because the archive is
+assembled locally before copying.
+
+If a host fails verification, promotion stops before the next host. Inspect
+the service status and use the host's latest backup for rollback:
+
+```bash
+sudo bash build-tools/install-on-debian-siprec-userspace.sh list-backups
+sudo bash build-tools/install-on-debian-siprec-userspace.sh rollback latest
+```
+
 ## Local / gitignored (not official)
 
 | Path | Role |

@@ -15,6 +15,8 @@
 #include "main.h"
 #include "fix_frame_channel_layout.h"
 
+#define MIX_INPUT_IDLE_US 1000000
+
 
 
 struct mix_s {
@@ -27,7 +29,8 @@ struct mix_s {
 	uint64_t pts_offs[MIX_MAX_INPUTS]; // initialized at first input seen
 	uint64_t in_pts[MIX_MAX_INPUTS]; // running counter of next expected adjusted pts
 	struct timeval last_use[MIX_MAX_INPUTS]; // to recycle old mix inputs
-	void *input_ref[MIX_MAX_INPUTS]; // to avoid collisions in case of idx re-use
+	void *input_ref[MIX_MAX_INPUTS]; // SSRC owner; avoid collisions on idx re-use
+	stream_t *stream_ref[MIX_MAX_INPUTS]; // logical stream owner across SSRC changes
 	CH_LAYOUT_T channel_layout[MIX_MAX_INPUTS];
 	AVFilterContext *amix_ctx;
 	AVFilterContext *sink_ctx;
@@ -79,39 +82,94 @@ static void mix_input_reset(mix_t *mix, unsigned int idx) {
 	mix->pts_offs[idx] = (uint64_t) -1LL;
 	ZERO(mix->last_use[idx]);
 	mix->input_ref[idx] = NULL;
+	mix->stream_ref[idx] = NULL;
 	mix->in_pts[idx] = 0;
 }
 
 
-unsigned int mix_get_index(mix_t *mix, void *ptr, unsigned int media_sdp_id) {
-	unsigned int next = mix->next_idx++;
-	if (mix_output_per_media) {
-		next = media_sdp_id;
-		if (next >= mix_num_inputs) {
-			ilog(LOG_WARNING, "Error with mix_output_per_media sdp_label next %i is bigger than mix_num_inputs %i", next, mix_num_inputs );
+static gboolean mix_input_idle(mix_t *mix, unsigned int idx) {
+	struct timeval now;
+
+	if (!mix->input_ref[idx])
+		return TRUE;
+	if (!mix->last_use[idx].tv_sec && !mix->last_use[idx].tv_usec)
+		return FALSE;
+
+	gettimeofday(&now, NULL);
+	return timeval_diff(&now, &mix->last_use[idx]) >= MIX_INPUT_IDLE_US;
+}
+
+
+static unsigned int mix_assign_index(mix_t *mix, unsigned int idx, void *ssrc, stream_t *stream) {
+	mix->input_ref[idx] = ssrc;
+	mix->stream_ref[idx] = stream;
+	if (idx >= mix->next_idx)
+		mix->next_idx = idx + 1;
+	return idx;
+}
+
+
+unsigned int mix_get_index(mix_t *mix, void *ssrc, stream_t *stream, unsigned int media_sdp_id) {
+	unsigned int i;
+
+	// A payload/decoder change on the same SSRC keeps its existing slot.
+	for (i = 0; i < mix_num_inputs; i++) {
+		if (mix->input_ref[i] == ssrc)
+			return i;
+	}
+
+	// Hold/resume can change SSRC, but the logical stream must keep its mixer
+	// channel. This is important both for channel-mode recordings and for
+	// queued frames: old and new SSRCs for the same stream are serialized into
+	// one channel instead of creating a second channel or stealing another
+	// stream's channel.
+	if (stream) {
+		for (i = 0; i < mix_num_inputs; i++) {
+			if (mix->stream_ref[i] == stream)
+				return i;
 		}
 	}
 
-	if (next < mix_num_inputs) {
-		// must be unused
-		mix->input_ref[next] = ptr;
-		return next;
+	unsigned int next = mix->next_idx;
+	if (mix_output_per_media) {
+		next = media_sdp_id;
+		if (next >= (unsigned int) mix_num_inputs) {
+			ilog(LOG_WARNING, "Error with mix_output_per_media sdp_label next %u is bigger than mix_num_inputs %i",
+					next, mix_num_inputs);
+		}
 	}
 
-	// too many inputs - find one to re-use
+	if (next < (unsigned int) mix_num_inputs && !mix->input_ref[next])
+		return mix_assign_index(mix, next, ssrc, stream);
+
+	// Prefer an unused slot before recycling a live logical stream.
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (!mix->input_ref[i])
+			return mix_assign_index(mix, i, ssrc, stream);
+	}
+
+	// Reuse only an idle input. Never evict a live stream: its decoder may
+	// still deliver queued frames with the old SSRC.
 	struct timeval earliest = {0,};
+	gboolean found_idle = FALSE;
 	next = 0;
-	for (unsigned int i = 0; i < mix_num_inputs; i++) {
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (!mix_input_idle(mix, i))
+			continue;
 		if (earliest.tv_sec == 0 || timeval_cmp(&earliest, &mix->last_use[i]) > 0) {
 			next = i;
 			earliest = mix->last_use[i];
+			found_idle = TRUE;
 		}
+	}
+	if (!found_idle) {
+		ilog(LOG_DEBUG, "No idle mixer input for new SSRC; dropping mixed output");
+		return (unsigned int) -1;
 	}
 
 	ilog(LOG_DEBUG, "Re-using mix input index #%u", next);
 	mix_input_reset(mix, next);
-	mix->input_ref[next] = ptr;
-	return next;
+	return mix_assign_index(mix, next, ssrc, stream);
 }
 
 
@@ -304,9 +362,17 @@ int mix_add(mix_t *mix, AVFrame *frame, unsigned int idx, void *ptr, output_t *o
 	if (!mix->src_ctxs[idx])
 		goto err;
 
-	err = "received samples for old re-used input channel";
-	if (ptr != mix->input_ref[idx])
-		goto err;
+	ssrc_t *ssrc = ptr;
+	gboolean new_ssrc = ptr != mix->input_ref[idx];
+	if (new_ssrc && (!ssrc || mix->stream_ref[idx] != ssrc->stream)) {
+		// A frame from a stream which no longer owns this slot is stale. Frames
+		// from an old SSRC of the current logical stream are valid and are kept.
+		dbg("discarding stale frame from old mixer input channel");
+		av_frame_free(&frame);
+		return 0;
+	}
+	if (new_ssrc)
+		mix->input_ref[idx] = ptr;
 
 	gettimeofday(&mix->last_use[idx], NULL);
 
@@ -318,13 +384,24 @@ int mix_add(mix_t *mix, AVFrame *frame, unsigned int idx, void *ptr, output_t *o
 			frame->nb_samples,
 			(unsigned long long) mix->out_pts);
 
-	// adjust for media started late
-	if (G_UNLIKELY(mix->pts_offs[idx] == (uint64_t) -1LL))
-		mix->pts_offs[idx] = mix->out_pts - frame->pts;
-	frame->pts += mix->pts_offs[idx];
+	// A new SSRC normally starts its RTP timestamp at zero (or at an unrelated
+	// value). Rebase its first frame to the end of this logical channel, or to
+	// the current mixer position when that is later. This preserves every
+	// generation without asking the mixer to synthesize the timestamp gap.
+	gboolean first_frame = mix->pts_offs[idx] == (uint64_t) -1LL;
+	if (G_UNLIKELY(first_frame || new_ssrc)) {
+		uint64_t target = MAX(mix->out_pts, mix->in_pts[idx]);
+		mix->pts_offs[idx] = target - frame->pts;
+		frame->pts = target;
+	}
+	else
+		frame->pts += mix->pts_offs[idx];
 
-	// fill missing time
-	mix_silence_fill_idx_upto(mix, idx, frame->pts);
+	if (first_frame || new_ssrc)
+		mix->in_pts[idx] = frame->pts;
+	else
+		// fill missing time
+		mix_silence_fill_idx_upto(mix, idx, frame->pts);
 
 	// check for pts gap. this is the opposite of silence fill-in. if the frame
 	// pts is behind the expected input pts, there was a gap and we reset our

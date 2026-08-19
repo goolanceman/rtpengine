@@ -160,6 +160,44 @@ Rollback: safety copy to pre-rollback-<TS>/ → stop → restore bins → start.
 
     sudo bash build-tools/install-on-debian-siprec-userspace.sh status
 
+### 3.7 Debian SIPREC pair rollout
+
+From the build workstation, use the cluster wrapper to build the Debian
+artifacts and create the deployment tarball without changing any host:
+
+    ./build-tools/deploy-debian-siprec-cluster.sh
+
+The verified SSH aliases in the current cluster are:
+
+    euprod2-frankfurt-siprec-01
+    euprod2-frankfurt-siprec-02
+
+SSH uses the `mansoor` user configured in `~/.ssh/config`. Promote explicitly
+to those aliases:
+
+    ./build-tools/deploy-debian-siprec-cluster.sh --promote \
+      euprod2-frankfurt-siprec-01 euprod2-frankfurt-siprec-02
+
+The wrapper performs the following for each host, in order:
+
+1. Debian and `sudo` preflight.
+2. Copy the tarball and checksum with `scp`.
+3. Verify the checksum and extract under
+   `/var/tmp/rtpengine-rich-logs-deploy`.
+4. Run the backup-first userspace installer.
+5. Verify both production services are active before continuing.
+
+The rollout stops on the first failure, so the second host is not touched if
+the first host does not verify. Existing binaries and service/config files are
+backed up under `/var/backups/rtpengine-rich-logs/`. The kernel module and
+recording configuration are not changed.
+
+To override the SSH user, set `SSH_USER=...`; to use another pair, pass the
+host arguments explicitly. Roll back on an affected host with:
+
+    sudo bash build-tools/install-on-debian-siprec-userspace.sh list-backups
+    sudo bash build-tools/install-on-debian-siprec-userspace.sh rollback latest
+
 ---
 
 ## 4. Emergency: recording binary only
@@ -265,6 +303,10 @@ Script refused success; fix and re-promote.
 
     sudo journalctl -u rtpengine -u rtpengine-recording -f | grep --line-buffered 'recording '
 
+    # Build/package and promote the verified Debian SIPREC pair:
+    ./build-tools/deploy-debian-siprec-cluster.sh --promote \
+      euprod2-frankfurt-siprec-01 euprod2-frankfurt-siprec-02
+
 ---
 
 ## 10. Paths reference
@@ -276,10 +318,12 @@ Script refused success; fix and re-promote.
 | **RHEL bins (only)** | `release-bins/12.5.1.31-rich-logs/rhel/` |
 | Bin-dir policy | `build-tools/BINS.md` |
 | Deploy tarball script | `build-tools/package-rich-logs-tarball.sh` |
+| Debian SIPREC cluster wrapper | `build-tools/deploy-debian-siprec-cluster.sh` |
 | Promote/rollback script | build-tools/install-on-debian-siprec-userspace.sh |
 | Recording emergency fix | build-tools/fix-recording-bin-on-siprec.sh |
 | Side-by-side harness | build-tools/side-by-side-test/ |
 | Prod backups | /var/backups/rtpengine-rich-logs/ |
+| Remote deployment staging | /var/tmp/rtpengine-rich-logs-deploy/ |
 | Typical recording binary | /usr/bin/rtpengine-recording |
 | Typical recording config | /etc/rtpengine-recording.ini |
 | Typical unit | /etc/systemd/system/rtpengine-recording.service |

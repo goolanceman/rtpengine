@@ -252,11 +252,13 @@ sufficient for a standard installation of rtpengine.
     stream and do not take timestamping into account, meaning that gaps or pauses
     in the RTP stream are not reflected in the output audio file.
 
-    A __mixed__ audio file consists of the first four RTP SSRC seen, mixed together
-    into a single output file, which usually means that a bidirectional audio
-    stream is produced. Audio mixing takes RTP timestamping into account, so gaps
-    and pauses in the RTP media are reflected in the output audio to keep the
-    multiple audio sources in sync.
+    A __mixed__ audio file consists of the configured logical RTP inputs, mixed
+    together into a single output file, which usually means that a bidirectional
+    audio stream is produced. A logical input is tied to its RTP stream rather
+    than to one SSRC generation, so an SSRC change such as hold/resume does not
+    consume an additional mixer input. Audio mixing takes RTP timestamping into
+    account, so gaps and pauses in the RTP media are reflected in the output
+    audio to keep the multiple audio sources in sync.
 
 - __\-\-mix-method=direct__\|__channels__
 
@@ -266,15 +268,20 @@ sufficient for a standard installation of rtpengine.
     from a single input (__output-single__) would be.
 
     The __channels__ mixing method puts each audio input into its own audio channel
-    in the output file, therefore producing a multi-channel output file. Up to four
-    separate RTP SSRCs are supported for a mixed output, which means that if each
-    input is mono audio, then the mixed output file would contain 4 audio channels.
+    in the output file, therefore producing a multi-channel output file. Up to 16
+    separate logical RTP inputs are supported for a mixed output, which means that
+    if each input is mono audio, then the mixed output file can contain 16 audio
+    channels.
     This mixing method requires an output file format which supports these kinds of
     multi-channel audio formats (e.g. __wav__).
 
 - __\-\-mix-num-inputs=__*INT*
 
-    Change the number of recording channel in the output file. The value is between 1 to 4 (e.g. __4__, which is also the default value).
+    Change the number of recording channels in the output file. The value is
+    between 1 and 16. The default is __6__. With __mix-method=channels__, each
+    logical RTP input occupies one output channel; A-party, B-party, separate
+    beep, and separate MOH streams therefore use four channels, while SSRC
+    changes within any of those streams do not add channels.
 
 - __\-\-output-chmod=__*INT*
 

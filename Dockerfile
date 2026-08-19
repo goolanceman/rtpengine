@@ -43,6 +43,12 @@ COPY . .
 FROM build AS rtpengine
 WORKDIR /usr/src/rtpengine
 RUN rm -f config.mk \
+  recording-daemon/fix_frame_channel_layout.h \
+  recording-daemon/dtmf_rx_fillin.h \
+  recording-daemon/spandsp_logging.h \
+  daemon/fix_frame_channel_layout.h \
+  daemon/dtmf_rx_fillin.h \
+  daemon/spandsp_logging.h \
   && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
 WORKDIR /usr/src/rtpengine/daemon
 RUN make -j$(nproc) rtpengine && \
@@ -51,6 +57,12 @@ RUN make -j$(nproc) rtpengine && \
 FROM build AS rtpengine-recording
 WORKDIR /usr/src/rtpengine
 RUN rm -f config.mk \
+  recording-daemon/fix_frame_channel_layout.h \
+  recording-daemon/dtmf_rx_fillin.h \
+  recording-daemon/spandsp_logging.h \
+  daemon/fix_frame_channel_layout.h \
+  daemon/dtmf_rx_fillin.h \
+  daemon/spandsp_logging.h \
   && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
 WORKDIR /usr/src/rtpengine/recording-daemon
 RUN make -j$(nproc) rtpengine-recording && \
