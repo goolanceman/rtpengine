@@ -1,19 +1,34 @@
 #!/usr/bin/env bash
 # Build EL8/RHEL8-compatible rtpengine + rtpengine-recording via Docker and extract
-# into the canonical RHEL dir: release-bins/12.5.1.31-rich-logs/rhel/
+# into the RHEL build output dir: build-tools/bins/rhel/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-OUT_DIR="${OUT_DIR:-${ROOT_DIR}/release-bins/12.5.1.31-rich-logs/rhel}"
-DOCKERFILE="${DOCKERFILE:-${SCRIPT_DIR}/Dockerfile.rhel8}"
+BIN_ROOT="${ROOT_DIR}/build-tools/bins"
+OUT_DIR="${BIN_ROOT}/rhel"
+BACKUP_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+DOCKERFILE="${SCRIPT_DIR}/Dockerfile.rhel8"
 IMAGE_BUILD="${IMAGE_BUILD:-rtpengine-rhel8-build:local}"
 IMAGE_BINARIES="${IMAGE_BINARIES:-rtpengine-rhel8-binaries:local}"
-LOG_DIR="${LOG_DIR:-${ROOT_DIR}/build-tools/logs}"
+LOG_DIR="${ROOT_DIR}/build-tools/logs"
 WITH_TRANSCODING="${WITH_TRANSCODING:-yes}"
 
+backup_existing_bins() {
+  if [[ -d "${OUT_DIR}" ]] && find "${OUT_DIR}" -mindepth 1 -print -quit | grep -q .; then
+    local backup_dir="${BIN_ROOT}/rhel_backup_${BACKUP_TIMESTAMP}"
+    mkdir -p "${backup_dir}"
+    shopt -s dotglob nullglob
+    local existing=("${OUT_DIR}"/*)
+    shopt -u dotglob nullglob
+    mv -- "${existing[@]}" "${backup_dir}/"
+    echo "==> backed up existing RHEL binaries to ${backup_dir}"
+  fi
+}
+
+backup_existing_bins
 mkdir -p "${OUT_DIR}" "${LOG_DIR}"
 
 if ! command -v docker >/dev/null 2>&1; then

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Assemble rtpengine-12.5.1.31-rich-logs-<UTC datetime>.tar.gz from the
-# canonical bin dirs. Filename always ends with YYYYMMDDHHMMSS.
-#   Debian: release-bins/12.5.1.31-rich-logs/debian/
-#   RHEL:   release-bins/12.5.1.31-rich-logs/rhel/
+# canonical bin dirs. Filename includes the source commit and UTC timestamp.
+#   Debian: build-tools/bins/debian/
+#   RHEL:   build-tools/bins/rhel/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REL="${ROOT}/release-bins/12.5.1.31-rich-logs"
-DEB="${REL}/debian"
-RHEL="${REL}/rhel"
+BIN_ROOT="${ROOT}/build-tools/bins"
+TAR_DIR="${ROOT}/build-tools/tars"
+DEB="${BIN_ROOT}/debian"
+RHEL="${BIN_ROOT}/rhel"
 NAME="rtpengine-12.5.1.31-rich-logs"
 MARKER_REUSE='Re-using mix input index #%u'
 TS="$(date -u +%Y%m%d%H%M%S)"
@@ -30,7 +32,8 @@ stamp_out() {
   fi
   printf '%s\n' "${path}-${TS}"
 }
-OUT="$(stamp_out "${OUT:-${ROOT}/${NAME}.tar.gz}")"
+OUT="$(stamp_out "${OUT:-${TAR_DIR}/${NAME}-${SHA}.tar.gz}")"
+mkdir -p "$(dirname "${OUT}")"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -45,6 +48,7 @@ need_bins() {
 need_bins "${DEB}" debian
 need_bins "${RHEL}" rhel
 
+mkdir -p "${REL}"
 echo "==> metadata SHA=${SHA} BRANCH=${BRANCH} BUILT_AT=${BUILT_AT}"
 printf '%s\n' "12.5.1.31" > "${REL}/VERSION"
 printf '%s\n' "${SHA}" > "${REL}/GIT_SHA"
@@ -58,7 +62,7 @@ PKG="${INNER}/debian-bins"
 mkdir -p "${PKG}/bins"
 install -m 0755 "${DEB}/rtpengine" "${PKG}/bins/rtpengine"
 install -m 0755 "${DEB}/rtpengine-recording" "${PKG}/bins/rtpengine-recording"
-printf 'Canonical Debian bins from release-bins/12.5.1.31-rich-logs/debian\n' \
+printf 'Debian bins from build-tools/bins/debian\n' \
   > "${PKG}/bins/README.txt"
 install -m 0755 "${SCRIPT_DIR}/install-on-debian-siprec-userspace.sh" \
   "${PKG}/install-on-debian-siprec.sh"
@@ -67,8 +71,8 @@ rm -f "${PKG}/side-by-side-test/.bin-dir"
 printf '%s\n' "${SHA}" > "${PKG}/GIT_SHA"
 printf '%s\n' "${BRANCH}" > "${PKG}/GIT_BRANCH"
 printf '%s\n' "12.5.1.31" > "${PKG}/VERSION"
-printf 'See build-tools/BINS.md — bins live in release-bins/.../debian\n' > "${PKG}/README.md"
-tar -C "${INNER}" -czf "${REL}/debian-bins-package.tar.gz" debian-bins
+printf 'See build-tools/BINS.md — bins live in build-tools/bins/debian\n' > "${PKG}/README.md"
+tar -C "${INNER}" -czf "${INNER}/debian-bins-package.tar.gz" debian-bins
 
 echo "==> stage deploy tarball"
 STAGE="$(mktemp -d)"
@@ -76,6 +80,15 @@ trap 'rm -rf "${INNER}" "${STAGE}"' EXIT
 BASE="${STAGE}/${NAME}"
 mkdir -p "${BASE}/release-bins" "${BASE}/build-tools"
 cp -a "${REL}" "${BASE}/release-bins/"
+install -m 0644 "${INNER}/debian-bins-package.tar.gz" \
+  "${BASE}/release-bins/12.5.1.31-rich-logs/debian-bins-package.tar.gz"
+for p in debian rhel; do
+  mkdir -p "${BASE}/release-bins/12.5.1.31-rich-logs/${p}"
+  install -m 0755 "${BIN_ROOT}/${p}/rtpengine" \
+    "${BASE}/release-bins/12.5.1.31-rich-logs/${p}/rtpengine"
+  install -m 0755 "${BIN_ROOT}/${p}/rtpengine-recording" \
+    "${BASE}/release-bins/12.5.1.31-rich-logs/${p}/rtpengine-recording"
+done
 # never ship local backups
 rm -rf "${BASE}/release-bins/12.5.1.31-rich-logs/"*.bak.* \
        "${BASE}/release-bins/12.5.1.31-rich-logs/"*.bak
@@ -97,19 +110,19 @@ cat > "${BASE}/README.md" <<EOF
 
 See build-tools/BINS.md and build-tools/CONFLUENCE-12.5.1.31-rich-logs-usage.md
 
-Canonical bins (do not use rhel-binaries/ or debian-bins/):
-  Debian: release-bins/12.5.1.31-rich-logs/debian/
-  RHEL:   release-bins/12.5.1.31-rich-logs/rhel/
+Canonical build outputs:
+  Debian: build-tools/bins/debian/
+  RHEL:   build-tools/bins/rhel/
 
 Recording fix (${SHA}): ignore RTPengine's synthetic NAT-piercing probe (PT 127,
 sequence 65535, SSRC 0) instead of passing it to the audio decoder.
 
 Promote on Debian siprec:
-  BIN_DIR="\$PWD/release-bins/12.5.1.31-rich-logs/debian" \\
+  BIN_DIR="\$PWD/build-tools/bins/debian" \\
     sudo -E bash build-tools/install-on-debian-siprec-userspace.sh promote
 
 Promote on RHEL lab:
-  BIN_DIR="\$PWD/release-bins/12.5.1.31-rich-logs/rhel" \\
+  BIN_DIR="\$PWD/build-tools/bins/rhel" \\
     sudo -E bash build-tools/install-on-debian-siprec-userspace.sh promote
 EOF
 
@@ -130,6 +143,6 @@ for p in debian rhel; do
   grep -aFq "${MARKER_REUSE}" "${tmp}" || { rm -f "${tmp}"; die "${p} packaged recording missing mixer marker"; }
   rm -f "${tmp}"
   echo "OK mixer marker"
-  sha256sum "${REL}/${p}/rtpengine-recording"
+  sha256sum "${BIN_ROOT}/${p}/rtpengine-recording"
 done
 echo "OK ${OUT} sha=${SHA} built_at=${BUILT_AT}"

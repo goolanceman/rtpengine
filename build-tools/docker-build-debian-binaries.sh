@@ -1,19 +1,33 @@
 #!/usr/bin/env bash
 # Build Linux rtpengine + rtpengine-recording binaries via Docker and extract them
-# into the canonical Debian dir: release-bins/12.5.1.31-rich-logs/debian/
-# Override OUT_DIR=... for a scratch extract (e.g. mac-binaries).
+# into the Debian build output dir: build-tools/bins/debian/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-OUT_DIR="${OUT_DIR:-${ROOT_DIR}/release-bins/12.5.1.31-rich-logs/debian}"
-DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+BIN_ROOT="${ROOT_DIR}/build-tools/bins"
+OUT_DIR="${BIN_ROOT}/debian"
+BACKUP_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+DOCKERFILE="${ROOT_DIR}/Dockerfile"
 IMAGE_DAEMON="${IMAGE_DAEMON:-rtpengine-localbuild:daemon}"
 IMAGE_RECORDING="${IMAGE_RECORDING:-rtpengine-localbuild:recording}"
-LOG_DIR="${LOG_DIR:-${ROOT_DIR}/build-tools/logs}"
+LOG_DIR="${ROOT_DIR}/build-tools/logs"
 
+backup_existing_bins() {
+  if [[ -d "${OUT_DIR}" ]] && find "${OUT_DIR}" -mindepth 1 -print -quit | grep -q .; then
+    local backup_dir="${BIN_ROOT}/debian_backup_${BACKUP_TIMESTAMP}"
+    mkdir -p "${backup_dir}"
+    shopt -s dotglob nullglob
+    local existing=("${OUT_DIR}"/*)
+    shopt -u dotglob nullglob
+    mv -- "${existing[@]}" "${backup_dir}/"
+    echo "==> backed up existing Debian binaries to ${backup_dir}"
+  fi
+}
+
+backup_existing_bins
 mkdir -p "${OUT_DIR}" "${LOG_DIR}"
 
 if ! command -v docker >/dev/null 2>&1; then
