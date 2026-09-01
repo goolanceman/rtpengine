@@ -29,6 +29,7 @@ struct mix_s {
 	struct timeval last_use[MIX_MAX_INPUTS]; // to recycle old mix inputs
 	void *input_ref[MIX_MAX_INPUTS]; // SSRC owner; avoid collisions on idx re-use
 	stream_t *stream_ref[MIX_MAX_INPUTS]; // logical stream owner across SSRC changes
+	unsigned long tag_ref[MIX_MAX_INPUTS]; // monologue/party TAG → channel (A vs B)
 	CH_LAYOUT_T channel_layout[MIX_MAX_INPUTS];
 	AVFilterContext *amix_ctx;
 	AVFilterContext *sink_ctx;
@@ -83,6 +84,7 @@ static void mix_input_reset(mix_t *mix, unsigned int idx) {
 	ZERO(mix->last_use[idx]);
 	mix->input_ref[idx] = NULL;
 	mix->stream_ref[idx] = NULL;
+	mix->tag_ref[idx] = (unsigned long) -1;
 	mix->in_pts[idx] = 0;
 }
 
@@ -103,6 +105,9 @@ static gboolean mix_input_idle(mix_t *mix, unsigned int idx) {
 static unsigned int mix_assign_index(mix_t *mix, unsigned int idx, void *ssrc, stream_t *stream) {
 	mix->input_ref[idx] = ssrc;
 	mix->stream_ref[idx] = stream;
+	mix->tag_ref[idx] = (stream && stream->tag != (unsigned long) -1)
+		? stream->tag
+		: (unsigned long) -1;
 	if (idx >= mix->next_idx)
 		mix->next_idx = idx + 1;
 	return idx;
@@ -111,19 +116,39 @@ static unsigned int mix_assign_index(mix_t *mix, unsigned int idx, void *ssrc, s
 
 unsigned int mix_get_index(mix_t *mix, void *ssrc, stream_t *stream) {
 	unsigned int i;
+	unsigned long tag = (stream && stream->tag != (unsigned long) -1)
+		? stream->tag
+		: (unsigned long) -1;
 
-	/* Same SSRC keeps its existing slot (payload/decoder change). */
+	/* 1) Same SSRC keeps its existing slot (payload/decoder change). */
 	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
 		if (mix->input_ref[i] == ssrc)
 			return i;
 	}
 
-	/* Hold/resume can change SSRC; logical stream must keep its channel. */
+	/* 2) Same logical kernel stream across SSRC change (hold/re-INVITE). */
 	if (stream) {
 		for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
 			if (mix->stream_ref[i] == stream)
 				return mix_assign_index(mix, i, ssrc, stream);
 		}
+	}
+
+	/*
+	 * 3) Same SIPREC party TAG → same channel.
+	 *    All streams of party A share channel 0; party B share channel 1.
+	 *    This is what makes mix-method=channels produce clean A/B stereo
+	 *    instead of one channel per component/SSRC.
+	 */
+	if (tag != (unsigned long) -1) {
+		for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+			if (mix->tag_ref[i] == tag)
+				return mix_assign_index(mix, i, ssrc, stream);
+		}
+		/* Prefer slot = tag % mix_num_inputs when free (TAG 0→ch0, TAG 1→ch1). */
+		unsigned int pref = (unsigned int) (tag % (unsigned long) mix_num_inputs);
+		if (!mix->input_ref[pref] && mix->tag_ref[pref] == (unsigned long) -1)
+			return mix_assign_index(mix, pref, ssrc, stream);
 	}
 
 	unsigned int next = mix->next_idx;
@@ -158,6 +183,7 @@ unsigned int mix_get_index(mix_t *mix, void *ssrc, stream_t *stream) {
 	mix_input_reset(mix, next);
 	return mix_assign_index(mix, next, ssrc, stream);
 }
+
 
 
 int mix_config(mix_t *mix, const format_t *format) {
@@ -274,8 +300,11 @@ mix_t *mix_new() {
 	format_init(&mix->out_format);
 	mix->sink_frame = av_frame_alloc();
 
-	for (unsigned int i = 0; i < mix_num_inputs; i++)
+	for (unsigned int i = 0; i < mix_num_inputs; i++) {
 		mix->pts_offs[i] = (uint64_t) -1LL;
+		mix->tag_ref[i] = (unsigned long) -1;
+		mix->stream_ref[i] = NULL;
+	}
 
 	return mix;
 }
@@ -346,9 +375,23 @@ int mix_add(mix_t *mix, AVFrame *frame, unsigned int idx, void *ptr, output_t *o
 	if (!mix->src_ctxs[idx])
 		goto err;
 
-	err = "received samples for old re-used input channel";
-	if (ptr != mix->input_ref[idx])
-		goto err;
+	/* Allow SSRC change on same logical stream/tag (12.5 continuity). */
+	ssrc_t *ssrc = ptr;
+	gboolean new_ssrc = ptr != mix->input_ref[idx];
+	if (new_ssrc) {
+		gboolean same_stream = ssrc && mix->stream_ref[idx] == ssrc->stream;
+		gboolean same_tag = ssrc && ssrc->stream
+			&& mix->tag_ref[idx] != (unsigned long) -1
+			&& mix->tag_ref[idx] == ssrc->stream->tag;
+		if (!same_stream && !same_tag) {
+			dbg("discarding stale frame from old mixer input channel");
+			av_frame_free(&frame);
+			return 0;
+		}
+		mix->input_ref[idx] = ptr;
+		if (ssrc && ssrc->stream)
+			mix->stream_ref[idx] = ssrc->stream;
+	}
 
 	gettimeofday(&mix->last_use[idx], NULL);
 
@@ -360,13 +403,21 @@ int mix_add(mix_t *mix, AVFrame *frame, unsigned int idx, void *ptr, output_t *o
 			frame->nb_samples,
 			(unsigned long long) mix->out_pts);
 
-	// adjust for media started late
-	if (G_UNLIKELY(mix->pts_offs[idx] == (uint64_t) -1LL))
-		mix->pts_offs[idx] = mix->out_pts - frame->pts;
-	frame->pts += mix->pts_offs[idx];
-
-	// fill missing time
-	mix_silence_fill_idx_upto(mix, idx, frame->pts);
+	/* New SSRC on same channel: rebase PTS (avoid multi-second silence fill). */
+	gboolean first_frame = mix->pts_offs[idx] == (uint64_t) -1LL;
+	if (G_UNLIKELY(first_frame || new_ssrc)) {
+		uint64_t target = mix->out_pts;
+		if (mix->in_pts[idx] > target)
+			target = mix->in_pts[idx];
+		mix->pts_offs[idx] = target - frame->pts;
+		frame->pts = target;
+		mix->in_pts[idx] = frame->pts;
+	}
+	else {
+		frame->pts += mix->pts_offs[idx];
+		/* fill missing time */
+		mix_silence_fill_idx_upto(mix, idx, frame->pts);
+	}
 
 	// check for pts gap. this is the opposite of silence fill-in. if the frame
 	// pts is behind the expected input pts, there was a gap and we reset our
