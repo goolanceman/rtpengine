@@ -1,0 +1,65 @@
+# Build xt_RTPENGINE.ko for Debian 13 (trixie) headers + package DKMS sources.
+# 12.5.x kernel module is named xt_RTPENGINE (not nft_rtpengine).
+
+FROM debian:trixie-slim AS kmod
+ARG KVER=
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl dkms kmod \
+    linux-headers-amd64 \
+    python3 pkg-config git file rsync \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/rtpengine
+COPY . .
+
+# Resolve target kernel for headers meta package (prefer ARG, else installed headers)
+RUN set -e; \
+  if [ -n "$KVER" ]; then K="$KVER"; \
+  else K=$(ls -1d /lib/modules/*/build 2>/dev/null | head -1 | sed 's|.*/modules/||;s|/build||'); \
+  fi; \
+  echo "KVER=$K" > /tmp/kver.env; \
+  test -d "/lib/modules/$K/build"; \
+  echo "Building xt_RTPENGINE for kernel $K"; \
+  cd kernel-module; \
+  make clean || true; \
+  make -j"$(nproc)" KSRC="/lib/modules/$K/build" KERNELRELEASE="$K" \
+    RTPENGINE_VERSION="$(sed -n '1s/.*(\([^)]*\)).*/\1/p' /usr/src/rtpengine/debian/changelog)"; \
+  mkdir -p /out/kmod/"$K"; \
+  if [ -f xt_RTPENGINE.ko ]; then KO=xt_RTPENGINE.ko; \
+  elif [ -f nft_rtpengine.ko ]; then KO=nft_rtpengine.ko; \
+  else echo "no .ko produced"; ls -la; exit 1; fi; \
+  cp -a "$KO" /out/kmod/"$K"/; \
+  file /out/kmod/"$K"/"$KO"; \
+  modinfo /out/kmod/"$K"/"$KO" | head -20 || true
+
+# Stage DKMS source tree matching debian packaging layout
+RUN set -e; \
+  VER=$(sed -n '1s/.*(\([^)]*\)).*/\1/p' debian/changelog); \
+  UPSTREAM=$(echo "$VER" | sed 's/-[^-]*$//'); \
+  SRC="ngcp-rtpengine-${UPSTREAM}"; \
+  mkdir -p "/out/dkms-src/${SRC}"; \
+  cp -a kernel-module/. "/out/dkms-src/${SRC}/"; \
+  if [ -f debian/ngcp-rtpengine-kernel-dkms.dkms ]; then \
+    sed "s/#MODULE_VERSION#/${UPSTREAM}/g" debian/ngcp-rtpengine-kernel-dkms.dkms \
+      > "/out/dkms-src/${SRC}/dkms.conf"; \
+  else \
+    cat > "/out/dkms-src/${SRC}/dkms.conf" <<DKMS
+PACKAGE_NAME="ngcp-rtpengine"
+PACKAGE_VERSION="${UPSTREAM}"
+BUILD_EXCLUSIVE_KERNEL_MIN="4.4"
+MAKE[0]="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build RTPENGINE_VERSION=\\\"\${PACKAGE_VERSION}\\\""
+CLEAN="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build clean"
+AUTOINSTALL=yes
+BUILT_MODULE_NAME[0]="xt_RTPENGINE"
+DEST_MODULE_LOCATION[0]=/extra
+DKMS
+  fi; \
+  echo "$VER" > /out/VERSION; \
+  echo "$UPSTREAM" > /out/UPSTREAM; \
+  ls -la /out /out/kmod /out/dkms-src
+
+FROM scratch AS export
+COPY --from=kmod /out /out

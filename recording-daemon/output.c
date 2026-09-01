@@ -35,6 +35,7 @@ static int output_got_packet(encoder_t *enc, void *u1, void *u2) {
 	dbg("{%s%s%s} output dts %li", FMT_M(output->file_name), (long) output->encoder->mux_dts);
 
 	av_write_frame(output->fmtctx, enc->avpkt);
+	output->frames_written++;
 
 	return 0;
 }
@@ -47,6 +48,8 @@ int output_add(output_t *output, AVFrame *frame) {
 		return -1;
 	if (!output->fmtctx) // output not open
 		return -1;
+	if (frame)
+		output->samples_written += frame->nb_samples;
 	return encoder_input_fifo(output->encoder, frame, output_got_packet, output, NULL);
 }
 

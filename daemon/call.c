@@ -3648,10 +3648,227 @@ void call_destroy(struct call *c) {
 					se->average_mos.packetloss / mos_samples,
 					se->lowest_mos->packetloss,
 					se->highest_mos->packetloss);
+			/* Structured NOTICE line so LOG_NOTICE operators always see QoS */
+			ilog(LOG_NOTICE,
+				"call QOS        call-id=" STR_FORMAT_M
+				"  ssrc=%" PRIx32
+				"  mos_avg=%" PRIu64 ".%" PRIu64
+				"  mos_min=%" PRIu64 ".%" PRIu64
+				"  mos_max=%" PRIu64 ".%" PRIu64
+				"  jitter_avg_ms=%" PRIu64
+				"  jitter_min_ms=%" PRIu64
+				"  jitter_max_ms=%" PRIu64
+				"  loss_avg_pct=%" PRIu64
+				"  loss_min_pct=%" PRIu64
+				"  loss_max_pct=%" PRIu64
+				"  packets_lost=%u"
+				"  rtt_e2e_avg_ms=%" PRIu64 ".%" PRIu64
+				"  | Per-SSRC QoS summary",
+				STR_FMT_M(&c->callid),
+				se->h.ssrc,
+				se->average_mos.mos / mos_samples / 10,
+				se->average_mos.mos / mos_samples % 10,
+				se->lowest_mos->mos / 10,
+				se->lowest_mos->mos % 10,
+				se->highest_mos->mos / 10,
+				se->highest_mos->mos % 10,
+				se->average_mos.jitter / mos_samples,
+				se->lowest_mos->jitter,
+				se->highest_mos->jitter,
+				se->average_mos.packetloss / mos_samples,
+				se->lowest_mos->packetloss,
+				se->highest_mos->packetloss,
+				(unsigned int) se->packets_lost,
+				se->average_mos.rtt / mos_samples / 1000,
+				(se->average_mos.rtt / mos_samples / 100) % 10);
 
 next_k:
 			k = g_list_delete_link(k, k);
 		}
+	}
+
+	/* ---- rich call SUMMARY / PORT (LOG_NOTICE) ---- */
+	{
+		uint64_t tot_in_p = 0, tot_in_b = 0, tot_in_e = 0;
+		uint64_t tot_out_p = 0, tot_out_b = 0, tot_out_e = 0;
+		unsigned int ports_open = 0, ports_no_rtp = 0, medias_n = 0;
+		GString *codecs = g_string_new(NULL);
+		GString *ports = g_string_new(NULL);
+
+		for (l = c->monologues.head; l; l = l->next) {
+			ml = l->data;
+			for (unsigned int m = 0; m < ml->medias->len; m++) {
+				md = ml->medias->pdata[m];
+				if (!md)
+					continue;
+				medias_n++;
+				if (proto_is_rtp(md->protocol)) {
+					rtp_pt = __rtp_stats_codec(md);
+					if (rtp_pt && rtp_pt->encoding_with_params.len) {
+						if (codecs->len)
+							g_string_append_c(codecs, ',');
+						g_string_append_len(codecs,
+								rtp_pt->encoding_with_params.s,
+								rtp_pt->encoding_with_params.len);
+					}
+					else if (md->codecs.codec_prefs.length) {
+						for (GList *cl = md->codecs.codec_prefs.head; cl; cl = cl->next) {
+							const struct rtp_payload_type *pt = cl->data;
+							if (!pt || !pt->encoding_with_params.len)
+								continue;
+							if (codecs->len)
+								g_string_append_c(codecs, ',');
+							g_string_append_len(codecs,
+									pt->encoding_with_params.s,
+									pt->encoding_with_params.len);
+							if (codecs->len > 120)
+								break;
+						}
+					}
+				}
+				for (o = md->streams.head; o; o = o->next) {
+					ps = o->data;
+					if (PS_ISSET(ps, FALLBACK_RTCP))
+						continue;
+					ports_open++;
+					uint64_t pin = atomic64_get(&ps->stats_in.packets);
+					uint64_t pout = atomic64_get(&ps->stats_out.packets);
+					tot_in_p += pin;
+					tot_in_b += atomic64_get(&ps->stats_in.bytes);
+					tot_in_e += atomic64_get(&ps->stats_in.errors);
+					tot_out_p += pout;
+					tot_out_b += atomic64_get(&ps->stats_out.bytes);
+					tot_out_e += atomic64_get(&ps->stats_out.errors);
+					endpoint_t *lep = packet_stream_local_addr(ps);
+					if (ports->len < 400) {
+						if (ports->len)
+							g_string_append_c(ports, ',');
+						g_string_append_printf(ports, "%u%c",
+								(unsigned int) lep->port,
+								(!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? 'C' : 'R');
+					}
+					if (PS_ISSET(ps, RTP) && pin == 0 && pout == 0)
+						ports_no_rtp++;
+				}
+			}
+		}
+
+		long long duration_ms = 0;
+		if (c->destroyed.tv_sec)
+			duration_ms = timeval_diff(&c->destroyed, &c->created) / 1000;
+		else
+			duration_ms = timeval_diff(&rtpe_now, &c->created) / 1000;
+
+		const char *term = "unknown";
+		if (c->monologues.head) {
+			ml = c->monologues.head->data;
+			switch (ml->term_reason) {
+				case TIMEOUT: term = "timeout"; break;
+				case SILENT_TIMEOUT: term = "silent-timeout"; break;
+				case OFFER_TIMEOUT: term = "offer-timeout"; break;
+				case REGULAR: term = "regular"; break;
+				case FORCED: term = "forced"; break;
+				default: term = "other"; break;
+			}
+		}
+
+		ilog(LOG_NOTICE,
+			"call SUMMARY     call-id=" STR_FORMAT_M
+			"  duration_ms=%lld  term=%s  medias=%u  ports=%u"
+			"  local_ports=%s  codecs=%s"
+			"  rtp_in=%" PRIu64 "p/%" PRIu64 "B  err_in=%" PRIu64
+			"  rtp_out=%" PRIu64 "p/%" PRIu64 "B  err_out=%" PRIu64
+			"  ports_no_rtp=%u"
+			"  | Call end summary (ports/codecs/QoS totals)",
+			STR_FMT_M(&c->callid),
+			duration_ms, term, medias_n, ports_open,
+			ports->len ? ports->str : "(none)",
+			codecs->len ? codecs->str : "(none)",
+			tot_in_p, tot_in_b, tot_in_e,
+			tot_out_p, tot_out_b, tot_out_e,
+			ports_no_rtp);
+
+		if (tot_in_p == 0 && tot_out_p == 0)
+			ilog(LOG_WARN,
+				"call SUMMARY     call-id=" STR_FORMAT_M
+				"  | WARN: no RTP in or out for entire call",
+				STR_FMT_M(&c->callid));
+		else if (ports_no_rtp > 0)
+			ilog(LOG_WARN,
+				"call SUMMARY     call-id=" STR_FORMAT_M
+				"  ports_no_rtp=%u"
+				"  | WARN: one or more RTP ports saw zero packets",
+				STR_FMT_M(&c->callid), ports_no_rtp);
+
+		/* Per-port NOTICE lines */
+		for (l = c->monologues.head; l; l = l->next) {
+			ml = l->data;
+			for (unsigned int m = 0; m < ml->medias->len; m++) {
+				md = ml->medias->pdata[m];
+				if (!md)
+					continue;
+				const char *codec_s = "(n/a)";
+				if (proto_is_rtp(md->protocol)) {
+					rtp_pt = __rtp_stats_codec(md);
+					if (rtp_pt && rtp_pt->encoding_with_params.len)
+						codec_s = rtp_pt->encoding_with_params.s;
+					else if (md->codecs.codec_prefs.head) {
+						const struct rtp_payload_type *pt0 =
+							md->codecs.codec_prefs.head->data;
+						if (pt0 && pt0->encoding_with_params.len)
+							codec_s = pt0->encoding_with_params.s;
+					}
+				}
+				else if (md->format_str.len)
+					codec_s = md->format_str.s;
+				for (o = md->streams.head; o; o = o->next) {
+					ps = o->data;
+					if (PS_ISSET(ps, FALLBACK_RTCP))
+						continue;
+					endpoint_t *lep = packet_stream_local_addr(ps);
+					char *raddr = sockaddr_print_buf(&ps->endpoint.address);
+					char *laddr = sockaddr_print_buf(&lep->address);
+					uint64_t pin = atomic64_get(&ps->stats_in.packets);
+					uint64_t pout = atomic64_get(&ps->stats_out.packets);
+					uint64_t bin = atomic64_get(&ps->stats_in.bytes);
+					uint64_t bout = atomic64_get(&ps->stats_out.bytes);
+					uint64_t ein = atomic64_get(&ps->stats_in.errors);
+					uint64_t eout = atomic64_get(&ps->stats_out.errors);
+					int idle = (int) (rtpe_now.tv_sec - atomic64_get(&ps->last_packet));
+					ilog(LOG_NOTICE,
+						"call PORT       call-id=" STR_FORMAT_M
+						"  tag=" STR_FORMAT_M
+						"  media=%u  type=" STR_FORMAT
+						"  codec=%s  proto=%s"
+						"  local=%s:%u  remote=%s:%u%s"
+						"  in=%" PRIu64 "p/%" PRIu64 "B  out=%" PRIu64 "p/%" PRIu64 "B"
+						"  err_in=%" PRIu64 "  err_out=%" PRIu64
+						"  idle_sec=%d"
+						"  | Per-port media path summary",
+						STR_FMT_M(&c->callid),
+						STR_FMT_M(&ml->tag),
+						md->index,
+						STR_FMT(&md->type),
+						codec_s,
+						md->protocol ? md->protocol->name : "(unknown)",
+						laddr, (unsigned int) lep->port,
+						raddr, (unsigned int) ps->endpoint.port,
+						(!PS_ISSET(ps, RTP) && PS_ISSET(ps, RTCP)) ? " (RTCP)" : "",
+						pin, bin, pout, bout, ein, eout, idle);
+					if (PS_ISSET(ps, RTP) && pin == 0 && pout == 0)
+						ilog(LOG_WARN,
+							"call PORT       call-id=" STR_FORMAT_M
+							"  local=%s:%u  remote=%s:%u"
+							"  | WARN: no RTP flowing on this port",
+							STR_FMT_M(&c->callid),
+							laddr, (unsigned int) lep->port,
+							raddr, (unsigned int) ps->endpoint.port);
+				}
+			}
+		}
+
+		g_string_free(codecs, TRUE);
+		g_string_free(ports, TRUE);
 	}
 
 

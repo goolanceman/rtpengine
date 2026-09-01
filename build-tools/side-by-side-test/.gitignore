@@ -1,0 +1,3 @@
+.bin-dir
+__pycache__/
+*.pyc

@@ -3,6 +3,7 @@
 #include <netinet/ip6.h>
 #include <netinet/udp.h>
 #include <glib.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <openssl/err.h>
 #include "types.h"
@@ -312,12 +313,17 @@ static void packet_decode(ssrc_t *ssrc, packet_t *packet) {
 			const struct rtp_payload_type *rpt = rtp_get_rfc_payload_type(payload_type);
 			if (!rpt) {
 				ilog(LOG_WARN, "Unknown RTP payload type %u", payload_type);
+				if (ssrc->stream)
+					g_atomic_int_inc(&ssrc->stream->packets_decode_fail);
 				return;
 			}
 			payload_str = rpt->encoding_with_params.s;
 		}
 
 		dbg("payload type for %u is %s", payload_type, payload_str);
+		if (ssrc->stream && !ssrc->stream->codec_seen[0] && payload_str)
+			snprintf(ssrc->stream->codec_seen, sizeof(ssrc->stream->codec_seen),
+					"%s", payload_str);
 
 		pthread_mutex_lock(&mf->mix_lock);
 		output_t *outp = NULL;
@@ -330,13 +336,26 @@ static void packet_decode(ssrc_t *ssrc, packet_t *packet) {
 		if (!ssrc->decoders[payload_type]) {
 			ilog(LOG_WARN, "Cannot decode RTP payload type %u (%s)",
 					payload_type, payload_str);
+			if (ssrc->stream)
+				g_atomic_int_inc(&ssrc->stream->packets_decode_fail);
 			return;
 		}
+		ilog(LOG_NOTICE,
+			"recording CODEC     call-id=%s%s%s  stream=%s  pt=%u  codec=%s"
+			"  | Decoder opened for payload type",
+			FMT_M(mf->call_id ? mf->call_id : mf->name),
+			ssrc->stream && ssrc->stream->name ? ssrc->stream->name : "(unnamed)",
+			payload_type, payload_str);
 	}
 
 	if (decoder_input(ssrc->decoders[payload_type], &packet->payload, ntohl(packet->rtp->timestamp),
-			ssrc))
+			ssrc)) {
 		ilog(LOG_ERR, "Failed to decode media packet");
+		if (ssrc->stream)
+			g_atomic_int_inc(&ssrc->stream->packets_decode_fail);
+	}
+	else if (ssrc->stream)
+		g_atomic_int_inc(&ssrc->stream->packets_decode_ok);
 }
 
 
@@ -383,8 +402,10 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 	packet->udp = (void *) bufstr.s;
 	str_shift(&bufstr, sizeof(*packet->udp));
 
-	if (rtcp_demux_is_rtcp(&bufstr))
+	if (rtcp_demux_is_rtcp(&bufstr)) {
+		g_atomic_int_inc(&stream->packets_rtcp);
 		goto ignore; // for now
+	}
 
 	if (rtp_payload(&packet->rtp, &packet->payload, &bufstr))
 		goto err;
@@ -395,6 +416,7 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 	unsigned long ssrc_num = ntohl(packet->rtp->ssrc);
 	log_info_ssrc = ssrc_num;
 	dbg("packet parsed successfully, seq %u", packet->p.seq);
+	g_atomic_int_inc(&stream->packets_rtp);
 
 	// insert into ssrc queue
 	ssrc_t *ssrc = ssrc_get(stream, ssrc_num);
@@ -402,6 +424,7 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 		goto out;
 	if (packet_sequencer_insert(&ssrc->sequencer, &packet->p) < 0) {
 		dbg("skipping dupe packet (new seq %i prev seq %i)", packet->p.seq, ssrc->sequencer.seq);
+		g_atomic_int_inc(&stream->packets_dupe);
 		goto skip;
 	}
 
@@ -419,6 +442,7 @@ out:
 
 err:
 	ilog(LOG_WARN, "Failed to parse packet headers");
+	g_atomic_int_inc(&stream->packets_parse_err);
 ignore:
 	packet_free(packet);
 	log_info_ssrc = 0;

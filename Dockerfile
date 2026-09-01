@@ -1,0 +1,118 @@
+# skip building in internal infra:
+# DOCKER_SKIP
+# Debian bookworm build for rtpengine 11.5.x userspace
+
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  build-essential \
+  ca-certificates \
+  curl \
+  default-libmysqlclient-dev \
+  g++ \
+  gcc \
+  git \
+  gperf \
+  libavcodec-extra \
+  libavfilter-dev \
+  libbcg729-dev \
+  libcurl4-openssl-dev \
+  libevent-dev \
+  libglib2.0-dev \
+  libhiredis-dev \
+  libiptc-dev \
+  libjson-glib-dev \
+  libmnl-dev \
+  libnftnl-dev \
+  libsystemd-dev \
+  libncurses-dev \
+  libopus-dev \
+  libpcap-dev \
+  libpcre2-dev \
+  libspandsp-dev \
+  libssl-dev \
+  libwebsockets-dev \
+  libxmlrpc-core-c3-dev \
+  make \
+  markdown \
+  patch \
+  pkg-config \
+  zlib1g-dev
+
+WORKDIR /usr/src/rtpengine
+COPY . .
+
+FROM build AS rtpengine
+WORKDIR /usr/src/rtpengine
+RUN rm -f config.mk \
+  recording-daemon/fix_frame_channel_layout.h \
+  recording-daemon/dtmf_rx_fillin.h \
+  recording-daemon/spandsp_logging.h \
+  daemon/fix_frame_channel_layout.h \
+  daemon/dtmf_rx_fillin.h \
+  daemon/spandsp_logging.h \
+  && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
+WORKDIR /usr/src/rtpengine/daemon
+RUN make -j$(nproc) rtpengine && \
+  strip -o /usr/local/bin/rtpengine rtpengine
+
+FROM build AS rtpengine-recording
+WORKDIR /usr/src/rtpengine
+RUN rm -f config.mk \
+  recording-daemon/fix_frame_channel_layout.h \
+  recording-daemon/dtmf_rx_fillin.h \
+  recording-daemon/spandsp_logging.h \
+  daemon/fix_frame_channel_layout.h \
+  daemon/dtmf_rx_fillin.h \
+  daemon/spandsp_logging.h \
+  && sed -i -e 's/ -flto=auto//g' -e 's/ -ffat-lto-objects//g' -e 's/ -fuse-linker-plugin//g' utils/gen-common-flags || true
+WORKDIR /usr/src/rtpengine/recording-daemon
+RUN make -j$(nproc) rtpengine-recording && \
+  strip -o /usr/local/bin/rtpengine-recording rtpengine-recording
+
+FROM debian:bookworm-slim
+
+VOLUME ["/rec"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["rtpengine"]
+
+EXPOSE 23000-65535/udp 22222/udp
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  curl \
+  libavcodec-extra \
+  libavfilter9 \
+  libbcg729-0 \
+  libcurl4 \
+  libevent-2.1-7 \
+  libevent-pthreads-2.1-7 \
+  libglib2.0-0 \
+  libhiredis0.14 \
+  libip4tc2 \
+  libip6tc2 \
+  libjson-glib-1.0-0 \
+  libmariadb3 \
+  libncursesw6 \
+  libopus0 \
+  libpcap0.8 \
+  libpcre2-8-0 \
+  libspandsp2 \
+  libssl3 \
+  libwebsockets17 \
+  libxmlrpc-core-c3 \
+  net-tools \
+  procps \
+  sudo \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rtpengine /usr/local/bin/rtpengine /usr/local/bin/
+COPY --from=rtpengine-recording /usr/local/bin/rtpengine-recording /usr/local/bin/
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN echo '%sudo   ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/nopasswd && \
+  groupadd --gid 1000 rtpengine && \
+  useradd --uid 1000 --gid rtpengine -G sudo --shell /bin/bash --create-home rtpengine
+USER rtpengine
+WORKDIR /home/rtpengine
+COPY docker/rtpengine.conf .
