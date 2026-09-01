@@ -333,11 +333,16 @@ Script refused success; fix and re-promote.
 Keep this page updated when promote script or release-bins layout changes.
 
 
+## Recording channels (mix-num-inputs)
+
+Defaults match 12.5: mix-num-inputs default **6**, maximum **16**.
+Party A/B still map to one channel each via monologue TAG pinning.
+
 ## Recording channels (2-party SIPREC)
 
-With mix-method = channels, output channel count is mix-num-inputs (default 4). For normal A/B legs set in rtpengine-recording conf:
+With mix-method = channels, output channel count is mix-num-inputs (default 6). For normal A/B legs set in rtpengine-recording conf:
 
     mix-method = channels
-    mix-num-inputs = 2
+    mix-num-inputs = 6   # default (max 16); use 2 for strict stereo files
 
 Otherwise WAV/MP3 will be 4-channel even when only two parties speak.

@@ -4,9 +4,9 @@
 #include "types.h"
 #include <libavutil/frame.h>
 
-#define MIX_MAX_INPUTS 4
-/* SIPREC two-party default: stereo L/R (A=ch0, B=ch1). Override with --mix-num-inputs. */
-#define MIX_DEFAULT_INPUTS 2
+#define MIX_MAX_INPUTS 16
+/* Match 12.5: default 6 slots, max 16. Override with --mix-num-inputs. */
+#define MIX_DEFAULT_INPUTS 6
 
 mix_t *mix_new(void);
 void mix_destroy(mix_t *mix);

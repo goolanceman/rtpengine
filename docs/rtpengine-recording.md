@@ -257,7 +257,7 @@ sufficient for a standard installation of rtpengine.
 
 - __\-\-mix-num-inputs=__*INT*
 
-    Change the number of recording channel in the output file. The value is between 1 to 4 (e.g. __4__, which is also the default value).
+    Change the number of recording channels in the output file. The value is between 1 and 16. The default is __6__. With __mix-method=channels__, each logical RTP input occupies one output channel; A-party and B-party streams share channels by monologue TAG (same behaviour as 12.5).
 
 - __\-\-output-chmod=__*INT*
 
