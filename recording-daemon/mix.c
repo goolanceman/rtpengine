@@ -27,7 +27,8 @@ struct mix_s {
 	uint64_t pts_offs[MIX_MAX_INPUTS]; // initialized at first input seen
 	uint64_t in_pts[MIX_MAX_INPUTS]; // running counter of next expected adjusted pts
 	struct timeval last_use[MIX_MAX_INPUTS]; // to recycle old mix inputs
-	void *input_ref[MIX_MAX_INPUTS]; // to avoid collisions in case of idx re-use
+	void *input_ref[MIX_MAX_INPUTS]; // SSRC owner; avoid collisions on idx re-use
+	stream_t *stream_ref[MIX_MAX_INPUTS]; // logical stream owner across SSRC changes
 	CH_LAYOUT_T channel_layout[MIX_MAX_INPUTS];
 	AVFilterContext *amix_ctx;
 	AVFilterContext *sink_ctx;
@@ -40,6 +41,8 @@ struct mix_s {
 
 	AVFrame *silence_frame;
 };
+
+#define MIX_INPUT_IDLE_US 1000000
 
 
 static void mix_shutdown(mix_t *mix) {
@@ -79,32 +82,81 @@ static void mix_input_reset(mix_t *mix, unsigned int idx) {
 	mix->pts_offs[idx] = (uint64_t) -1LL;
 	ZERO(mix->last_use[idx]);
 	mix->input_ref[idx] = NULL;
+	mix->stream_ref[idx] = NULL;
 	mix->in_pts[idx] = 0;
 }
 
 
-unsigned int mix_get_index(mix_t *mix, void *ptr) {
-	unsigned int next = mix->next_idx++;
-	if (next < mix_num_inputs) {
-		// must be unused
-		mix->input_ref[next] = ptr;
-		return next;
+static gboolean mix_input_idle(mix_t *mix, unsigned int idx) {
+	struct timeval now;
+
+	if (!mix->input_ref[idx])
+		return TRUE;
+	if (!mix->last_use[idx].tv_sec && !mix->last_use[idx].tv_usec)
+		return FALSE;
+
+	gettimeofday(&now, NULL);
+	return timeval_diff(&now, &mix->last_use[idx]) >= MIX_INPUT_IDLE_US;
+}
+
+
+static unsigned int mix_assign_index(mix_t *mix, unsigned int idx, void *ssrc, stream_t *stream) {
+	mix->input_ref[idx] = ssrc;
+	mix->stream_ref[idx] = stream;
+	if (idx >= mix->next_idx)
+		mix->next_idx = idx + 1;
+	return idx;
+}
+
+
+unsigned int mix_get_index(mix_t *mix, void *ssrc, stream_t *stream) {
+	unsigned int i;
+
+	/* Same SSRC keeps its existing slot (payload/decoder change). */
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (mix->input_ref[i] == ssrc)
+			return i;
 	}
 
-	// too many inputs - find one to re-use
+	/* Hold/resume can change SSRC; logical stream must keep its channel. */
+	if (stream) {
+		for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+			if (mix->stream_ref[i] == stream)
+				return mix_assign_index(mix, i, ssrc, stream);
+		}
+	}
+
+	unsigned int next = mix->next_idx;
+	if (next < (unsigned int) mix_num_inputs && !mix->input_ref[next])
+		return mix_assign_index(mix, next, ssrc, stream);
+
+	/* Prefer unused slot before recycling a live logical stream. */
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (!mix->input_ref[i])
+			return mix_assign_index(mix, i, ssrc, stream);
+	}
+
+	/* Reuse only an idle input. Never evict a live stream. */
 	struct timeval earliest = {0,};
+	gboolean found_idle = FALSE;
 	next = 0;
-	for (unsigned int i = 0; i < mix_num_inputs; i++) {
+	for (i = 0; i < (unsigned int) mix_num_inputs; i++) {
+		if (!mix_input_idle(mix, i))
+			continue;
 		if (earliest.tv_sec == 0 || timeval_cmp(&earliest, &mix->last_use[i]) > 0) {
 			next = i;
 			earliest = mix->last_use[i];
+			found_idle = TRUE;
 		}
+	}
+	if (!found_idle) {
+		ilog(LOG_DEBUG, "No idle mixer input for new SSRC; dropping mixed output");
+		return (unsigned int) -1;
 	}
 
 	ilog(LOG_DEBUG, "Re-using mix input index #%u", next);
 	mix_input_reset(mix, next);
-	mix->input_ref[next] = ptr;
-	return next;
+	return mix_assign_index(mix, next, ssrc, stream);
 }
 
 

@@ -331,3 +331,13 @@ Script refused success; fix and re-promote.
 ---
 
 Keep this page updated when promote script or release-bins layout changes.
+
+
+## Recording channels (2-party SIPREC)
+
+With mix-method = channels, output channel count is mix-num-inputs (default 4). For normal A/B legs set in rtpengine-recording conf:
+
+    mix-method = channels
+    mix-num-inputs = 2
+
+Otherwise WAV/MP3 will be 4-channel even when only two parties speak.

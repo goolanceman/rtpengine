@@ -380,6 +380,17 @@ static void ssrc_run(ssrc_t *ssrc) {
 
 
 // stream is unlocked, buf is malloc'd
+
+/* rtpengine "pierce NAT" empty RTP probe — not audio; do not decode/mix. */
+static int packet_is_nat_probe(const packet_t *packet) {
+	if (!packet || !packet->rtp || packet->payload.len)
+		return 0;
+	return (packet->rtp->m_pt & 0x7f) == 127
+		&& ntohs(packet->rtp->seq_num) == 0xffff
+		&& ntohl(packet->rtp->timestamp) == 0
+		&& ntohl(packet->rtp->ssrc) == 0;
+}
+
 void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 	packet_t *packet = g_slice_alloc0(sizeof(*packet));
 	packet->buffer = buf; // handing it over
@@ -411,6 +422,8 @@ void packet_process(stream_t *stream, unsigned char *buf, unsigned len) {
 		goto err;
 	if (rtp_padding(packet->rtp, &packet->payload))
 		goto err;
+	if (packet_is_nat_probe(packet))
+		goto ignore;
 
 	packet->p.seq = ntohs(packet->rtp->seq_num);
 	unsigned long ssrc_num = ntohl(packet->rtp->ssrc);
