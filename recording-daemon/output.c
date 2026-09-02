@@ -104,18 +104,20 @@ static output_t *output_alloc(const char *path, const char *name) {
 }
 
 static output_t *output_new(const char *path, const char *call, const char *type, const char *kind,
-		const char *label)
+		const char *label, const char *pattern)
 {
 	// construct output file name
 	struct timeval now;
 	struct tm tm;
 	const char *ax = call;
+	if (!pattern || !pattern[0])
+		pattern = output_pattern;
 
 	gettimeofday(&now, NULL);
 	localtime_r(&now.tv_sec, &tm);
 
 	GString *f = g_string_new("");
-	for (const char *p = output_pattern; *p; p++) {
+	for (const char *p = pattern; *p; p++) {
 		if (*p != '%') {
 			g_string_append_c(f, *p);
 			continue;
@@ -204,7 +206,12 @@ static output_t *output_new_from_full_path(const char *path, char *name, const c
 
 output_t *output_new_ext(metafile_t *mf, const char *type, const char *kind, const char *label) {
 	output_t *ret;
-	dbg("Metadata %s, output destination %s", mf->metadata, mf->output_dest);
+	const char *dir = mf->output_path ? mf->output_path : output_dir;
+	const char *pat = mf->output_pattern ? mf->output_pattern : output_pattern;
+	const char *call_id = mf->call_id ? mf->call_id : (mf->parent ? mf->parent : "unknown");
+
+	dbg("Metadata %s, output destination %s, path %s, pattern %s",
+			mf->metadata, mf->output_dest, dir, pat);
 	if (mf->output_dest) {
 		char *path = g_strdup(mf->output_dest);
 		char *sep = strrchr(path, '/');
@@ -215,11 +222,11 @@ output_t *output_new_ext(metafile_t *mf, const char *type, const char *kind, con
 			ret->skip_filename_extension = TRUE;
 		}
 		else
-			ret = output_new_from_full_path(output_dir, path, kind);
+			ret = output_new_from_full_path(dir, path, kind);
 		g_free(path);
 	}
 	else
-		ret = output_new(output_dir, mf->parent, type, kind, label);
+		ret = output_new(dir, call_id, type, kind, label, pat);
 
 	return ret;
 }

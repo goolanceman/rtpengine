@@ -222,6 +222,24 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		stream_forwarding_on(mf, lu, u);
 	else if (!strcmp(section, "OUTPUT_DESTINATION"))
 		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
+	else if (!strcmp(section, "RECORDING_FILE")) {
+		mf->output_dest = g_string_chunk_insert(mf->gsc, content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  recording_file=%s  | Explicit output file override",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATH")) {
+		mf->output_path = g_string_chunk_insert(mf->gsc, content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  output_dir=%s  | Audio under NG recording-dir",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
+	else if (!strcmp(section, "RECORDING_PATTERN")) {
+		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
+		ilog(LOG_NOTICE,
+			"recording INFO      call-id=%s%s%s  filename_pattern=%s  | NG recording-pattern",
+			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+	}
 }
 
 

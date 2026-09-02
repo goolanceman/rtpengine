@@ -1638,6 +1638,35 @@ static void call_ng_main_flags(struct sdp_ng_flags *out, str *key, bencode_item_
 		case CSH_LOOKUP("output-destination"):
 			out->output_dest = s;
 			break;
+		/* 12.5-compatible per-call output dir/pattern (siprec-drachtio) */
+		case CSH_LOOKUP("recording path"):
+		case CSH_LOOKUP("recording dir"):
+		case CSH_LOOKUP("recording directory"):
+		case CSH_LOOKUP("recording folder"):
+		case CSH_LOOKUP("output path"):
+		case CSH_LOOKUP("output dir"):
+		case CSH_LOOKUP("output directory"):
+		case CSH_LOOKUP("output folder"):
+		case CSH_LOOKUP("recording-path"):
+		case CSH_LOOKUP("recording-dir"):
+		case CSH_LOOKUP("recording-directory"):
+		case CSH_LOOKUP("recording-folder"):
+		case CSH_LOOKUP("output-path"):
+		case CSH_LOOKUP("output-dir"):
+		case CSH_LOOKUP("output-directory"):
+		case CSH_LOOKUP("output-folder"):
+			out->recording_path = s;
+			break;
+		case CSH_LOOKUP("recording pattern"):
+		case CSH_LOOKUP("recording-pattern"):
+		case CSH_LOOKUP("output pattern"):
+		case CSH_LOOKUP("output-pattern"):
+			out->recording_pattern = s;
+			break;
+		case CSH_LOOKUP("recording file"):
+		case CSH_LOOKUP("recording-file"):
+			out->recording_file = s;
+			break;
 		case CSH_LOOKUP("address family"):
 		case CSH_LOOKUP("address-family"):
 			if (bencode_get_str(value, &out->address_family_str))
@@ -2082,6 +2111,7 @@ static const char *call_offer_answer_ng(struct ng_buffer *ngbuf, bencode_item_t 
 
 	update_metadata_monologue(from_ml, &flags.metadata);
 	detect_setup_recording(call, &flags);
+	recording_apply_ng_path_flags(call, &flags);
 
 	struct recording *recording = call->recording;
 	if (recording != NULL) {
@@ -2791,6 +2821,7 @@ const char *call_start_forwarding_ng(bencode_item_t *input, bencode_item_t *outp
 		update_metadata_monologue(monologue, &flags.metadata);
 	else
 		update_metadata_call(call, &flags.metadata);
+	recording_apply_ng_path_flags(call, &flags);
 
 	recording_start(call, NULL, NULL);
 	return NULL;
@@ -2826,6 +2857,7 @@ const char *call_stop_forwarding_ng(bencode_item_t *input, bencode_item_t *outpu
 		update_metadata_monologue(monologue, &flags.metadata);
 	else
 		update_metadata_call(call, &flags.metadata);
+	recording_apply_ng_path_flags(call, &flags);
 
 	recording_stop(call);
 

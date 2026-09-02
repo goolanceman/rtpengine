@@ -296,6 +296,46 @@ void update_metadata_monologue(struct call_monologue *ml, str *metadata) {
 	update_metadata_call(call, metadata);
 }
 
+
+/* Apply NG recording-dir / recording-pattern / recording-file onto call and metafile.
+ * Matches 12.5 behaviour used by siprec-drachtio. */
+void recording_apply_ng_path_flags(struct call *call, const struct sdp_ng_flags *flags) {
+	if (!call || !flags)
+		return;
+
+	if (flags->recording_path.s && flags->recording_path.len
+			&& str_cmp_str(&flags->recording_path, &call->recording_path)) {
+		call_str_cpy(call, &call->recording_path, &flags->recording_path);
+		if (call->recording)
+			recording_meta_chunk(call->recording, "RECORDING_PATH", &call->recording_path);
+		ilog(LOG_NOTICE,
+			"recording PATH      call-id=" STR_FORMAT_M
+			"  recording-dir=" STR_FORMAT
+			"  | Per-call output directory from NG (overrides conf output-dir)",
+			STR_FMT_M(&call->callid), STR_FMT(&call->recording_path));
+	}
+	if (flags->recording_pattern.s && flags->recording_pattern.len
+			&& str_cmp_str(&flags->recording_pattern, &call->recording_pattern)) {
+		call_str_cpy(call, &call->recording_pattern, &flags->recording_pattern);
+		if (call->recording)
+			recording_meta_chunk(call->recording, "RECORDING_PATTERN", &call->recording_pattern);
+		ilog(LOG_NOTICE,
+			"recording PATTERN   call-id=" STR_FORMAT_M
+			"  recording-pattern=" STR_FORMAT
+			"  | Per-call filename pattern from NG (overrides conf output-pattern)",
+			STR_FMT_M(&call->callid), STR_FMT(&call->recording_pattern));
+	}
+	if (flags->recording_file.s && flags->recording_file.len
+			&& str_cmp_str(&flags->recording_file, &call->recording_file)) {
+		call_str_cpy(call, &call->recording_file, &flags->recording_file);
+		if (call->recording)
+			recording_meta_chunk(call->recording, "RECORDING_FILE", &call->recording_file);
+	}
+	/* Also keep legacy output-destination if present */
+	if (flags->output_dest.s && flags->output_dest.len && call->recording)
+		recording_meta_chunk(call->recording, "OUTPUT_DESTINATION", &flags->output_dest);
+}
+
 static void update_output_dest(struct call *call, const str *output_dest) {
 	if (!output_dest || !output_dest->s || !call->recording)
 		return;
@@ -344,12 +384,15 @@ void recording_start(struct call *call, const char *prefix, const str *output_de
 	ilog(LOG_NOTICE,
 		"recording START     call-id=" STR_FORMAT_M
 		"  method=%s  prefix=%s  metadata=%s  spool=%s"
+		"  path=%s  pattern=%s"
 		"  | Turning on call recording",
 		STR_FMT_M(&call->callid),
 		selected_recording_method ? selected_recording_method->name : "(none)",
 		prefix ? prefix : "(auto)",
 		call->metadata.len ? call->metadata.s : "(none)",
-		spooldir ? spooldir : "(unset)");
+		spooldir ? spooldir : "(unset)",
+		call->recording_path.len ? call->recording_path.s : "(default)",
+		call->recording_pattern.len ? call->recording_pattern.s : "(default)");
 
 	call->recording = g_slice_alloc0(sizeof(struct recording));
 	struct recording *recording = call->recording;
@@ -399,6 +442,12 @@ void recording_start(struct call *call, const char *prefix, const str *output_de
 		recording->meta_prefix ? recording->meta_prefix : "(none)",
 		recording->proc.meta_filepath ? recording->proc.meta_filepath : "(none)",
 		recording->pcap.recording_path ? recording->pcap.recording_path : "(none)");
+	if (call->recording_path.len)
+		recording_meta_chunk(recording, "RECORDING_PATH", &call->recording_path);
+	if (call->recording_pattern.len)
+		recording_meta_chunk(recording, "RECORDING_PATTERN", &call->recording_pattern);
+	if (call->recording_file.len)
+		recording_meta_chunk(recording, "RECORDING_FILE", &call->recording_file);
 	recording_update_flags(call, true);
 }
 void recording_stop(struct call *call) {
@@ -484,6 +533,9 @@ void detect_setup_recording(struct call *call, const struct sdp_ng_flags *flags)
 
 	const str *recordcall = &flags->record_call_str;
 	const char *md = call->metadata.len ? call->metadata.s : "(none)";
+
+	/* Capture path/pattern even when record-call is deferred */
+	recording_apply_ng_path_flags(call, flags);
 
 	if (!str_cmp(recordcall, "yes") || !str_cmp(recordcall, "on") || flags->record_call) {
 		ilog(LOG_NOTICE,
