@@ -343,9 +343,24 @@ static void update_output_dest(struct call *call, const str *output_dest) {
 }
 
 // lock must be held
+static void emit_recording_path_meta(struct call *call) {
+	struct recording *recording = call->recording;
+	if (!recording)
+		return;
+	if (call->recording_path.len)
+		recording_meta_chunk(recording, "RECORDING_PATH", &call->recording_path);
+	if (call->recording_pattern.len)
+		recording_meta_chunk(recording, "RECORDING_PATTERN", &call->recording_pattern);
+	if (call->recording_file.len)
+		recording_meta_chunk(recording, "RECORDING_FILE", &call->recording_file);
+}
+
 static void update_flags_proc(struct call *call, bool streams) {
 	append_meta_chunk_null(call->recording, "RECORDING %u", CALL_ISSET(call, RECORDING_ON));
 	append_meta_chunk_null(call->recording, "FORWARDING %u", CALL_ISSET(call, REC_FORWARDING));
+	/* Path/pattern MUST appear before STREAM interface sections so the
+	 * recording-daemon opens mix files under the NG recording-dir. */
+	emit_recording_path_meta(call);
 	if (!streams)
 		return;
 	for (GList *l = call->streams.head; l; l = l->next) {
@@ -407,6 +422,11 @@ void recording_start(struct call *call, const char *prefix, const str *output_de
 		recording->meta_prefix = g_strdup(prefix);
 
 	_rm(init_struct, call);
+
+	/* Write NG recording-dir/pattern into metafile BEFORE stream setup.
+	 * Stream INTERFACE sections open mix_out immediately; without path first,
+	 * files land under conf output-dir (what uk-lon4 was seeing). */
+	emit_recording_path_meta(call);
 
 	// update main call flags (global recording/forwarding on/off) to prevent recording
 	// features from being started when the stream info (through setup_stream) is
@@ -1002,6 +1022,7 @@ static void proc_init(struct call *call) {
 	append_meta_chunk_s(recording, recording->meta_prefix, "PARENT");
 	if (call->metadata.len)
 		recording_meta_chunk(recording, "METADATA", &call->metadata);
+	emit_recording_path_meta(call);
 }
 
 static void sdp_before_proc(struct recording *recording, const str *sdp, struct call_monologue *ml,

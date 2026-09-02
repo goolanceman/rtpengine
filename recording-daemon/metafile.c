@@ -233,12 +233,23 @@ static void meta_section(metafile_t *mf, char *section, char *content, unsigned 
 		ilog(LOG_NOTICE,
 			"recording INFO      call-id=%s%s%s  output_dir=%s  | Audio under NG recording-dir",
 			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+		if (mf->mix_out)
+			ilog(LOG_WARN,
+				"recording INFO      call-id=%s%s%s  output_dir=%s"
+				"  | WARN: RECORDING_PATH arrived after mix file already opened"
+				" (path may have fallen back to conf output-dir)",
+				FMT_M(mf->call_id ? mf->call_id : mf->name), content);
 	}
 	else if (!strcmp(section, "RECORDING_PATTERN")) {
 		mf->output_pattern = g_string_chunk_insert(mf->gsc, content);
 		ilog(LOG_NOTICE,
 			"recording INFO      call-id=%s%s%s  filename_pattern=%s  | NG recording-pattern",
 			FMT_M(mf->call_id ? mf->call_id : mf->name), content);
+		if (mf->mix_out)
+			ilog(LOG_WARN,
+				"recording INFO      call-id=%s%s%s  filename_pattern=%s"
+				"  | WARN: RECORDING_PATTERN arrived after mix file already opened",
+				FMT_M(mf->call_id ? mf->call_id : mf->name), content);
 	}
 }
 
